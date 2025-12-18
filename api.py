@@ -6,7 +6,7 @@ FastAPI REST API for accessing HiAnime scraper functionality
 Run with: uvicorn api:app --reload --port 8000
 """
 
-from fastapi import FastAPI, HTTPException, Query
+from fastapi import FastAPI, HTTPException, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from typing import Optional, List
@@ -14,6 +14,16 @@ from pydantic import BaseModel
 from dataclasses import asdict
 
 from hianime_scraper import HiAnimeScraper, SearchResult, AnimeInfo, Episode
+
+# Import MAL clients
+try:
+    from mal_api import MALApiClient, MALUserClient
+    mal_client = MALApiClient()
+    MAL_ENABLED = True
+except (ImportError, ValueError) as e:
+    print(f"MAL API not available: {e}")
+    mal_client = None
+    MAL_ENABLED = False
 
 # Initialize FastAPI app
 app = FastAPI(
@@ -87,9 +97,10 @@ async def root():
     """API Health Check"""
     return {
         "status": "online",
-        "api": "HiAnime Scraper API",
-        "version": "1.0.0",
-        "total_endpoints": 16,
+        "api": "HiAnime + MAL Scraper API",
+        "version": "2.0.0",
+        "mal_enabled": MAL_ENABLED,
+        "total_endpoints": 24 if MAL_ENABLED else 16,
         "endpoints": {
             "search": "/api/search?keyword=naruto",
             "filter": "/api/filter?type=tv&status=airing",
@@ -105,6 +116,12 @@ async def root():
             "producer": "/api/producer/{producer_slug}",
             "anime_details": "/api/anime/{slug}",
             "episodes": "/api/episodes/{slug}",
+            "mal_search": "/api/mal/search?query=naruto",
+            "mal_details": "/api/mal/anime/{mal_id}",
+            "mal_ranking": "/api/mal/ranking?type=all",
+            "mal_seasonal": "/api/mal/seasonal?year=2024&season=winter",
+            "mal_user_auth": "/api/mal/user/auth (POST)",
+            "combined_search": "/api/combined/search?query=naruto",
             "docs": "/docs",
             "redoc": "/redoc"
         }
@@ -449,6 +466,339 @@ async def get_episodes(slug: str):
         }
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# MYANIMELIST ENDPOINTS (Public - No Auth Required)
+# =============================================================================
+
+@app.get("/api/mal/search", tags=["MyAnimeList"])
+async def mal_search(
+    query: str = Query(..., description="Search query"),
+    limit: int = Query(10, ge=1, le=100, description="Results limit")
+):
+    """
+    Search anime on MyAnimeList (official API)
+    
+    - Uses official MAL API
+    - Returns detailed anime information including scores, rankings
+    """
+    if not MAL_ENABLED:
+        raise HTTPException(status_code=503, detail="MAL API not configured")
+    
+    try:
+        results = mal_client.search(query, limit=limit)
+        return {
+            "success": True,
+            "source": "myanimelist",
+            "count": len(results),
+            "data": [asdict(r) for r in results]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/mal/anime/{mal_id}", tags=["MyAnimeList"])
+async def mal_anime_details(mal_id: int):
+    """
+    Get anime details from MyAnimeList by MAL ID
+    
+    - **mal_id**: MyAnimeList anime ID
+    """
+    if not MAL_ENABLED:
+        raise HTTPException(status_code=503, detail="MAL API not configured")
+    
+    try:
+        anime = mal_client.get_anime_details(mal_id)
+        if not anime:
+            raise HTTPException(status_code=404, detail="Anime not found on MAL")
+        
+        return {
+            "success": True,
+            "source": "myanimelist",
+            "data": asdict(anime)
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/mal/ranking", tags=["MyAnimeList"])
+async def mal_ranking(
+    type: str = Query("all", description="Ranking type: all, airing, upcoming, tv, movie, bypopularity, favorite"),
+    limit: int = Query(10, ge=1, le=100, description="Results limit")
+):
+    """
+    Get anime rankings from MyAnimeList
+    
+    Ranking types:
+    - **all**: Top Anime Series
+    - **airing**: Top Airing Anime
+    - **upcoming**: Top Upcoming Anime
+    - **tv**: Top Anime TV Series
+    - **movie**: Top Anime Movies
+    - **bypopularity**: Most Popular Anime
+    - **favorite**: Most Favorited Anime
+    """
+    if not MAL_ENABLED:
+        raise HTTPException(status_code=503, detail="MAL API not configured")
+    
+    try:
+        results = mal_client.get_ranking(type, limit=limit)
+        return {
+            "success": True,
+            "source": "myanimelist",
+            "ranking_type": type,
+            "count": len(results),
+            "data": [asdict(r) for r in results]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/mal/seasonal", tags=["MyAnimeList"])
+async def mal_seasonal(
+    year: int = Query(..., description="Year (e.g., 2024)"),
+    season: str = Query(..., description="Season: winter, spring, summer, fall"),
+    limit: int = Query(10, ge=1, le=100, description="Results limit")
+):
+    """
+    Get seasonal anime from MyAnimeList
+    
+    - **year**: Year (e.g., 2024, 2025)
+    - **season**: winter (Jan-Mar), spring (Apr-Jun), summer (Jul-Sep), fall (Oct-Dec)
+    """
+    if not MAL_ENABLED:
+        raise HTTPException(status_code=503, detail="MAL API not configured")
+    
+    if season not in ["winter", "spring", "summer", "fall"]:
+        raise HTTPException(status_code=400, detail="Invalid season. Use: winter, spring, summer, fall")
+    
+    try:
+        results = mal_client.get_seasonal(year, season, limit=limit)
+        return {
+            "success": True,
+            "source": "myanimelist",
+            "year": year,
+            "season": season,
+            "count": len(results),
+            "data": [asdict(r) for r in results]
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# MYANIMELIST USER AUTHENTICATION (User's Own Credentials)
+# =============================================================================
+
+class UserAuthRequest(BaseModel):
+    """Request model for user authentication"""
+    client_id: str
+    client_secret: Optional[str] = None
+    redirect_uri: str
+
+
+class TokenExchangeRequest(BaseModel):
+    """Request model for token exchange"""
+    client_id: str
+    client_secret: Optional[str] = None
+    code: str
+    code_verifier: str
+    redirect_uri: str
+
+
+class UserListRequest(BaseModel):
+    """Request model for accessing user's anime list"""
+    client_id: str
+    access_token: str
+    status: Optional[str] = None
+    limit: int = 100
+
+
+@app.post("/api/mal/user/auth", tags=["MyAnimeList User Auth"])
+async def mal_user_get_auth_url(request: UserAuthRequest):
+    """
+    Get OAuth2 authorization URL for MAL user login
+    
+    ⚠️ **PRIVACY NOTICE**:
+    - We DO NOT store your client_id or client_secret
+    - Your credentials are used only for this request
+    - Authentication happens directly with MyAnimeList
+    
+    **How to get your credentials:**
+    1. Go to https://myanimelist.net/apiconfig
+    2. Create a new API application
+    3. Copy your Client ID and Client Secret
+    
+    **Returns:**
+    - auth_url: Open this URL to login to MAL
+    - code_verifier: Save this! You'll need it for token exchange
+    - state: Security parameter
+    """
+    try:
+        user_client = MALUserClient(
+            client_id=request.client_id,
+            client_secret=request.client_secret
+        )
+        
+        auth_data = user_client.get_authorization_url(redirect_uri=request.redirect_uri)
+        
+        return {
+            "success": True,
+            "message": "Open auth_url in browser to login. Save code_verifier for token exchange.",
+            "privacy_notice": "We DO NOT store your credentials. This request is stateless.",
+            "data": auth_data
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/mal/user/token", tags=["MyAnimeList User Auth"])
+async def mal_user_exchange_token(request: TokenExchangeRequest):
+    """
+    Exchange authorization code for access token
+    
+    ⚠️ **PRIVACY NOTICE**:
+    - We DO NOT store your tokens
+    - Save your tokens securely on your end
+    - Tokens are returned to you, not stored on our servers
+    
+    **After getting auth code from callback:**
+    1. Extract 'code' from callback URL
+    2. Use the code_verifier from previous step
+    3. Call this endpoint to get access_token
+    """
+    try:
+        user_client = MALUserClient(
+            client_id=request.client_id,
+            client_secret=request.client_secret
+        )
+        
+        tokens = user_client.exchange_code_for_token(
+            code=request.code,
+            code_verifier=request.code_verifier,
+            redirect_uri=request.redirect_uri
+        )
+        
+        return {
+            "success": True,
+            "message": "Save these tokens securely. We DO NOT store them.",
+            "privacy_notice": "Tokens are returned to you only. Store them securely on your end.",
+            "data": tokens
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/mal/user/animelist", tags=["MyAnimeList User Auth"])
+async def mal_user_get_animelist(request: UserListRequest):
+    """
+    Get user's anime list
+    
+    ⚠️ **PRIVACY NOTICE**:
+    - We DO NOT store your access token
+    - Your list data is returned to you only
+    
+    **Status options:**
+    - watching
+    - completed
+    - on_hold
+    - dropped
+    - plan_to_watch
+    - (leave empty for all)
+    """
+    try:
+        user_client = MALUserClient(client_id=request.client_id)
+        user_client.set_access_token(request.access_token)
+        
+        anime_list = user_client.get_user_anime_list(
+            status=request.status,
+            limit=request.limit
+        )
+        
+        return {
+            "success": True,
+            "privacy_notice": "We DO NOT store your data. This response is not logged.",
+            "count": len(anime_list),
+            "data": anime_list
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/mal/user/profile", tags=["MyAnimeList User Auth"])
+async def mal_user_get_profile(
+    client_id: str = Body(...),
+    access_token: str = Body(...)
+):
+    """
+    Get authenticated user's MAL profile
+    
+    ⚠️ **PRIVACY NOTICE**:
+    - We DO NOT store your access token or profile data
+    """
+    try:
+        user_client = MALUserClient(client_id=client_id)
+        user_client.set_access_token(access_token)
+        
+        profile = user_client.get_user_info()
+        
+        return {
+            "success": True,
+            "privacy_notice": "We DO NOT store your profile data.",
+            "data": profile
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# COMBINED ENDPOINTS (HiAnime + MAL)
+# =============================================================================
+
+@app.get("/api/combined/search", tags=["Combined"])
+async def combined_search(
+    query: str = Query(..., description="Search query"),
+    limit: int = Query(5, ge=1, le=20, description="Results per source")
+):
+    """
+    Search both HiAnime and MyAnimeList simultaneously
+    
+    Returns results from both sources for comparison:
+    - HiAnime: Streaming info, episodes
+    - MAL: Scores, rankings, detailed info
+    """
+    results = {
+        "success": True,
+        "query": query,
+        "sources": {
+            "hianime": {"enabled": True, "results": [], "error": None},
+            "myanimelist": {"enabled": MAL_ENABLED, "results": [], "error": None}
+        }
+    }
+    
+    # HiAnime results
+    try:
+        hianime_results = scraper.search(query, page=1)[:limit]
+        results["sources"]["hianime"]["results"] = serialize_results(hianime_results)
+        results["sources"]["hianime"]["count"] = len(hianime_results)
+    except Exception as e:
+        results["sources"]["hianime"]["error"] = str(e)
+    
+    # MAL results
+    if MAL_ENABLED:
+        try:
+            mal_results = mal_client.search(query, limit=limit)
+            results["sources"]["myanimelist"]["results"] = [asdict(r) for r in mal_results]
+            results["sources"]["myanimelist"]["count"] = len(mal_results)
+        except Exception as e:
+            results["sources"]["myanimelist"]["error"] = str(e)
+    else:
+        results["sources"]["myanimelist"]["error"] = "MAL API not configured"
+    
+    return results
 
 
 # =============================================================================
