@@ -1,41 +1,108 @@
 # Flutter Integration Guide for HiAnime API
 
-## Quick Start
+Complete guide for integrating video streaming in Flutter apps with the HiAnime API.
 
-### Base URL
+## 🚀 Base URL
+
 ```
-http://127.0.0.1:8000  (local development)
-https://your-domain.com  (production)
+https://hianime-api-b6ix.onrender.com
 ```
 
 ---
 
-## 🎬 Streaming Endpoints
+## 📺 Video Streaming Endpoints
 
-### 1. Get Playable Stream URLs
+### Understanding the Flow
 
-**Endpoint:**
 ```
-GET /api/stream/{episode_id}?server_type={sub|dub}&include_proxy_url={true|false}
+1. Search/Browse → Get anime slug
+2. Get Episodes → Get episode_id  
+3. Get Stream → Get video URL + proxy_url
+4. Play Video → Use proxy_url for mobile!
 ```
 
-**Parameters:**
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `episode_id` | string | Yes | Episode ID (e.g., "2142") |
-| `server_type` | string | No | `sub` (default), `dub`, or `all` |
-| `include_proxy_url` | bool | No | Set `true` if direct URLs are blocked |
+---
 
-**Example Request:**
+## 🔗 All Video Streaming Endpoints
+
+### 1. Get Episode List
 ```
-GET http://127.0.0.1:8000/api/stream/2142?server_type=sub&include_proxy_url=true
+GET /api/episodes/{anime_slug}
 ```
+
+**Example:** `/api/episodes/one-piece-100`
 
 **Response:**
 ```json
 {
   "success": true,
-  "episode_id": "2142",
+  "count": 1122,
+  "data": [
+    {
+      "number": 1,
+      "title": "I'm Luffy! The Man Who's Gonna Be King of the Pirates!",
+      "episode_id": "2141",
+      "url": "/watch/one-piece-100?ep=2141",
+      "is_filler": false
+    }
+  ]
+}
+```
+
+---
+
+### 2. Get Video Servers
+```
+GET /api/servers/{episode_id}
+```
+
+**Example:** `/api/servers/2143`
+
+**Response:**
+```json
+{
+  "success": true,
+  "episode_id": "2143",
+  "data": [
+    {"server_id": "1", "server_name": "HD-1", "server_type": "sub"},
+    {"server_id": "2", "server_name": "HD-2", "server_type": "sub"},
+    {"server_id": "3", "server_name": "HD-1", "server_type": "dub"}
+  ]
+}
+```
+
+---
+
+### 3. Get Video Sources (Embed URLs)
+```
+GET /api/sources/{episode_id}?server_type=sub
+```
+
+**Example:** `/api/sources/2143?server_type=sub`
+
+Returns embed URLs (iframe URLs) - not directly playable.
+
+---
+
+### 4. ⭐ Get Streaming Links (MAIN ENDPOINT)
+```
+GET /api/stream/{episode_id}?server_type=sub&include_proxy_url=true
+```
+
+**Parameters:**
+| Param | Type | Default | Description |
+|-------|------|---------|-------------|
+| `episode_id` | string | required | Episode ID (e.g., "2143") |
+| `server_type` | string | "sub" | "sub", "dub", or "all" |
+| `include_proxy_url` | bool | false | **SET TO `true` FOR MOBILE!** |
+
+**Example:** `/api/stream/2143?server_type=sub&include_proxy_url=true`
+
+**Response:**
+```json
+{
+  "success": true,
+  "episode_id": "2143",
   "server_type": "sub",
   "total_streams": 3,
   "streams": [
@@ -45,32 +112,85 @@ GET http://127.0.0.1:8000/api/stream/2142?server_type=sub&include_proxy_url=true
       "server_type": "sub",
       "sources": [
         {
-          "file": "https://sunshinerays93.live/_v7/.../master.m3u8",
+          "file": "https://sunburst93.live/_v7/.../master.m3u8",
+          "proxy_url": "/api/proxy/m3u8?url=aHR0cHM6...&ref=aHR0cHM6...",
           "type": "hls",
           "quality": "auto",
           "isM3U8": true,
-          "host": "sunshinerays93.live",
-          "proxy_url": "/api/proxy/m3u8?url=aHR0cHM6Ly9..."
+          "host": "sunburst93.live"
         }
       ],
       "subtitles": [
-        {
-          "file": "https://mgstatics.xyz/subtitle/.../eng-2.vtt",
-          "label": "English",
-          "kind": "captions"
-        }
+        {"file": "https://cc.megacloud.tv/.../eng.vtt", "label": "English", "kind": "captions"}
       ],
       "skips": {
-        "intro": { "start": 31, "end": 111 },
-        "outro": { "start": 1376, "end": 1447 }
+        "intro": {"start": 0, "end": 85},
+        "outro": {"start": 1300, "end": 1420}
       },
       "headers": {
-        "Referer": "https://hianime.to/",
-        "User-Agent": "Mozilla/5.0 ..."
+        "Referer": "https://megacloud.blog/",
+        "User-Agent": "Mozilla/5.0..."
       }
     }
   ]
 }
+```
+
+---
+
+### 5. 🆕 M3U8 Proxy (For Mobile Apps)
+```
+GET /api/proxy/m3u8?url={base64_url}&ref={base64_referer}
+```
+
+**What it does:**
+- Fetches m3u8 playlist with correct headers
+- Rewrites ALL internal URLs to go through proxy
+- Enables seamless playback on iOS/Android
+
+**Parameters:**
+| Param | Type | Description |
+|-------|------|-------------|
+| `url` | string | Base64 encoded m3u8 URL |
+| `ref` | string | Base64 encoded referer (from stream headers) |
+
+---
+
+### 6. 🆕 Segment Proxy
+```
+GET /api/proxy/segment?url={base64_url}&ref={base64_referer}
+```
+
+Proxies video segments (.ts, .aac, encryption keys). Used internally by m3u8 proxy.
+
+---
+
+### 7. Extract Stream from Embed
+```
+GET /api/extract-stream?url={embed_url}
+```
+
+Extracts playable m3u8 from embed URLs directly.
+
+---
+
+## ⚠️ CRITICAL: Understanding `file` vs `proxy_url`
+
+| Field | Use Case | Headers Needed? |
+|-------|----------|-----------------|
+| `file` | Web browsers, players that support headers | ✅ Yes |
+| `proxy_url` | **Mobile apps (Flutter, iOS, Android)** | ❌ No |
+
+### Why Mobile Apps MUST Use `proxy_url`
+
+```
+❌ WRONG: Using `file` URL directly
+   → iOS AVPlayer can't send custom headers
+   → Error: OSStatus -12660 (Permission denied)
+
+✅ CORRECT: Using `proxy_url`  
+   → Server adds headers automatically
+   → Works on all platforms!
 ```
 
 ---
@@ -82,10 +202,9 @@ GET http://127.0.0.1:8000/api/stream/2142?server_type=sub&include_proxy_url=true
 ```yaml
 dependencies:
   http: ^1.1.0
-  better_player: ^0.0.84
-  # OR
   video_player: ^2.8.1
-  chewie: ^1.7.4
+  # OR for more features:
+  better_player: ^0.0.84
 ```
 
 ### API Service Class
@@ -94,37 +213,87 @@ dependencies:
 import 'dart:convert';
 import 'package:http/http.dart' as http;
 
-class HiAnimeApiService {
-  static const String baseUrl = 'http://127.0.0.1:8000'; // Change for production
-  
-  /// Get streaming links for an episode
+class HiAnimeApi {
+  static const String baseUrl = 'https://hianime-api-b6ix.onrender.com';
+
+  // ============================================
+  // EPISODE ENDPOINTS
+  // ============================================
+
+  /// Get all episodes for an anime
+  static Future<List<Episode>> getEpisodes(String animeSlug) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/episodes/$animeSlug'),
+    );
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      return (data['data'] as List)
+          .map((e) => Episode.fromJson(e))
+          .toList();
+    }
+    throw Exception('Failed to get episodes');
+  }
+
+  // ============================================
+  // VIDEO SERVER ENDPOINTS
+  // ============================================
+
+  /// Get available servers for an episode
+  static Future<List<VideoServer>> getServers(String episodeId) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/servers/$episodeId'),
+    );
+
+    if (response.statusCode == 200) {
+      final data = jsonDecode(response.body);
+      return (data['data'] as List)
+          .map((s) => VideoServer.fromJson(s))
+          .toList();
+    }
+    throw Exception('Failed to get servers');
+  }
+
+  // ============================================
+  // ⭐ STREAMING ENDPOINTS (MAIN)
+  // ============================================
+
+  /// Get streaming links with proxy URLs for mobile
   /// 
-  /// [episodeId] - Episode ID from the URL (e.g., "2142")
-  /// [serverType] - "sub", "dub", or "all"
-  /// [includeProxy] - Set true if direct URLs don't work
+  /// ALWAYS set includeProxy=true for mobile apps!
   static Future<StreamResponse> getStreamingLinks({
     required String episodeId,
     String serverType = 'sub',
-    bool includeProxy = true,
+    bool includeProxy = true,  // ALWAYS true for mobile!
   }) async {
-    final url = Uri.parse(
-      '$baseUrl/api/stream/$episodeId?server_type=$serverType&include_proxy_url=$includeProxy'
+    final response = await http.get(
+      Uri.parse(
+        '$baseUrl/api/stream/$episodeId?server_type=$serverType&include_proxy_url=$includeProxy'
+      ),
     );
-    
-    final response = await http.get(url);
-    
+
     if (response.statusCode == 200) {
       return StreamResponse.fromJson(jsonDecode(response.body));
-    } else {
-      throw Exception('Failed to load streams: ${response.statusCode}');
     }
+    throw Exception('Failed to get streams');
   }
-  
-  /// Search for anime
-  static Future<List<SearchResult>> searchAnime(String query) async {
-    final url = Uri.parse('$baseUrl/api/search?keyword=$query');
-    final response = await http.get(url);
-    
+
+  /// Build the full proxy URL for video playback
+  /// 
+  /// Use this URL directly in video_player - NO headers needed!
+  static String buildProxyUrl(String proxyPath) {
+    return '$baseUrl$proxyPath';
+  }
+
+  // ============================================
+  // SEARCH & BROWSE ENDPOINTS
+  // ============================================
+
+  static Future<List<SearchResult>> search(String query, {int page = 1}) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/search?keyword=${Uri.encodeComponent(query)}&page=$page'),
+    );
+
     if (response.statusCode == 200) {
       final data = jsonDecode(response.body);
       return (data['data'] as List)
@@ -133,19 +302,17 @@ class HiAnimeApiService {
     }
     throw Exception('Search failed');
   }
-  
-  /// Get episodes for an anime
-  static Future<List<Episode>> getEpisodes(String animeSlug) async {
-    final url = Uri.parse('$baseUrl/api/episodes/$animeSlug');
-    final response = await http.get(url);
-    
+
+  static Future<AnimeDetails> getAnimeDetails(String slug) async {
+    final response = await http.get(
+      Uri.parse('$baseUrl/api/anime/$slug'),
+    );
+
     if (response.statusCode == 200) {
       final data = jsonDecode(response.body);
-      return (data['episodes'] as List)
-          .map((item) => Episode.fromJson(item))
-          .toList();
+      return AnimeDetails.fromJson(data['data']);
     }
-    throw Exception('Failed to get episodes');
+    throw Exception('Failed to get anime details');
   }
 }
 ```
@@ -153,6 +320,10 @@ class HiAnimeApiService {
 ### Data Models
 
 ```dart
+// ============================================
+// STREAMING MODELS
+// ============================================
+
 class StreamResponse {
   final bool success;
   final String episodeId;
@@ -176,6 +347,9 @@ class StreamResponse {
           .toList() ?? [],
     );
   }
+  
+  /// Get the best stream (first available)
+  StreamData? get bestStream => streams.isNotEmpty ? streams.first : null;
 }
 
 class StreamData {
@@ -212,11 +386,14 @@ class StreamData {
       headers: Map<String, String>.from(json['headers'] ?? {}),
     );
   }
+  
+  /// Get the best source (first available)
+  StreamSource? get bestSource => sources.isNotEmpty ? sources.first : null;
 }
 
 class StreamSource {
-  final String file;        // Direct m3u8 URL
-  final String? proxyUrl;   // Proxy URL (use if direct fails)
+  final String file;         // Original URL (needs headers)
+  final String? proxyUrl;    // ⭐ USE THIS FOR MOBILE!
   final String type;
   final String quality;
   final bool isM3U8;
@@ -241,6 +418,9 @@ class StreamSource {
       host: json['host'] ?? '',
     );
   }
+  
+  /// Check if proxy URL is available
+  bool get hasProxy => proxyUrl != null && proxyUrl!.isNotEmpty;
 }
 
 class Subtitle {
@@ -285,46 +465,112 @@ class TimeRange {
       end: json['end'] ?? 0,
     );
   }
+  
+  Duration get startDuration => Duration(seconds: start);
+  Duration get endDuration => Duration(seconds: end);
+}
+
+// ============================================
+// OTHER MODELS
+// ============================================
+
+class Episode {
+  final int number;
+  final String? title;
+  final String episodeId;
+  final bool isFiller;
+
+  Episode({
+    required this.number,
+    this.title,
+    required this.episodeId,
+    this.isFiller = false,
+  });
+
+  factory Episode.fromJson(Map<String, dynamic> json) {
+    return Episode(
+      number: json['number'] ?? 0,
+      title: json['title'],
+      episodeId: json['episode_id']?.toString() ?? '',
+      isFiller: json['is_filler'] ?? false,
+    );
+  }
+}
+
+class VideoServer {
+  final String serverId;
+  final String serverName;
+  final String serverType;
+
+  VideoServer({
+    required this.serverId,
+    required this.serverName,
+    required this.serverType,
+  });
+
+  factory VideoServer.fromJson(Map<String, dynamic> json) {
+    return VideoServer(
+      serverId: json['server_id']?.toString() ?? '',
+      serverName: json['server_name'] ?? '',
+      serverType: json['server_type'] ?? 'sub',
+    );
+  }
 }
 
 class SearchResult {
   final String id;
-  final String slug;
-  final String name;
-  final String? poster;
+  final String title;
+  final String? thumbnail;
   final String? type;
+  final int? episodesSub;
+  final int? episodesDub;
 
   SearchResult({
     required this.id,
-    required this.slug,
-    required this.name,
-    this.poster,
+    required this.title,
+    this.thumbnail,
     this.type,
+    this.episodesSub,
+    this.episodesDub,
   });
 
   factory SearchResult.fromJson(Map<String, dynamic> json) {
     return SearchResult(
       id: json['id'] ?? '',
-      slug: json['slug'] ?? '',
-      name: json['name'] ?? '',
-      poster: json['poster'],
+      title: json['title'] ?? '',
+      thumbnail: json['thumbnail'],
       type: json['type'],
+      episodesSub: json['episodes_sub'],
+      episodesDub: json['episodes_dub'],
     );
   }
 }
 
-class Episode {
+class AnimeDetails {
   final String id;
-  final int number;
-  final String? title;
+  final String title;
+  final String? synopsis;
+  final String? thumbnail;
+  final List<String> genres;
+  final double? malScore;
 
-  Episode({required this.id, required this.number, this.title});
+  AnimeDetails({
+    required this.id,
+    required this.title,
+    this.synopsis,
+    this.thumbnail,
+    this.genres = const [],
+    this.malScore,
+  });
 
-  factory Episode.fromJson(Map<String, dynamic> json) {
-    return Episode(
-      id: json['id']?.toString() ?? '',
-      number: json['number'] ?? 0,
-      title: json['title'],
+  factory AnimeDetails.fromJson(Map<String, dynamic> json) {
+    return AnimeDetails(
+      id: json['id'] ?? '',
+      title: json['title'] ?? '',
+      synopsis: json['synopsis'],
+      thumbnail: json['thumbnail'],
+      genres: List<String>.from(json['genres'] ?? []),
+      malScore: json['mal_score']?.toDouble(),
     );
   }
 }
@@ -334,29 +580,32 @@ class Episode {
 
 ## 🎥 Video Player Implementation
 
-### Option 1: Using BetterPlayer (Recommended)
+### Simple Video Player (video_player package)
 
 ```dart
-import 'package:better_player/better_player.dart';
+import 'package:flutter/material.dart';
+import 'package:video_player/video_player.dart';
 
-class VideoPlayerScreen extends StatefulWidget {
+class AnimeVideoPlayer extends StatefulWidget {
   final String episodeId;
   final String serverType;
 
-  const VideoPlayerScreen({
+  const AnimeVideoPlayer({
     required this.episodeId,
     this.serverType = 'sub',
-  });
+    Key? key,
+  }) : super(key: key);
 
   @override
-  _VideoPlayerScreenState createState() => _VideoPlayerScreenState();
+  State<AnimeVideoPlayer> createState() => _AnimeVideoPlayerState();
 }
 
-class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
-  BetterPlayerController? _controller;
+class _AnimeVideoPlayerState extends State<AnimeVideoPlayer> {
+  VideoPlayerController? _controller;
   StreamResponse? _streamData;
   bool _isLoading = true;
   String? _error;
+  int _currentServerIndex = 0;
 
   @override
   void initState() {
@@ -365,11 +614,17 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
   }
 
   Future<void> _loadStream() async {
+    setState(() {
+      _isLoading = true;
+      _error = null;
+    });
+
     try {
-      final response = await HiAnimeApiService.getStreamingLinks(
+      // ⭐ IMPORTANT: Always include proxy URL for mobile!
+      final response = await HiAnimeApi.getStreamingLinks(
         episodeId: widget.episodeId,
         serverType: widget.serverType,
-        includeProxy: true,
+        includeProxy: true,  // MUST be true!
       );
 
       if (response.streams.isEmpty) {
@@ -377,7 +632,7 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
       }
 
       _streamData = response;
-      _initializePlayer(response.streams.first);
+      await _initializePlayer(_currentServerIndex);
     } catch (e) {
       setState(() {
         _error = e.toString();
@@ -386,55 +641,57 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
     }
   }
 
-  void _initializePlayer(StreamData stream) {
+  Future<void> _initializePlayer(int serverIndex) async {
+    // Dispose old controller
+    await _controller?.dispose();
+
+    final stream = _streamData!.streams[serverIndex];
     final source = stream.sources.first;
-    
-    // Use proxy URL if available, otherwise use direct URL with headers
+
+    // ⭐ USE PROXY URL - NO HEADERS NEEDED!
     final videoUrl = source.proxyUrl != null
-        ? '${HiAnimeApiService.baseUrl}${source.proxyUrl}'
+        ? HiAnimeApi.buildProxyUrl(source.proxyUrl!)
         : source.file;
 
-    // Headers only needed for direct URLs
-    final headers = source.proxyUrl != null ? <String, String>{} : stream.headers;
+    print('Playing URL: $videoUrl');
 
-    // Setup subtitles
-    final subtitles = stream.subtitles.map((sub) {
-      return BetterPlayerSubtitlesSource(
-        type: BetterPlayerSubtitlesSourceType.network,
-        urls: [sub.file],
-        name: sub.label,
-      );
-    }).toList();
-
-    final dataSource = BetterPlayerDataSource(
-      BetterPlayerDataSourceType.network,
-      videoUrl,
-      headers: headers,
-      subtitles: subtitles,
-      videoFormat: BetterPlayerVideoFormat.hls,
+    _controller = VideoPlayerController.networkUrl(
+      Uri.parse(videoUrl),
+      // Only add headers if NOT using proxy
+      httpHeaders: source.proxyUrl == null ? stream.headers : {},
     );
 
-    _controller = BetterPlayerController(
-      BetterPlayerConfiguration(
-        autoPlay: true,
-        aspectRatio: 16 / 9,
-        fit: BoxFit.contain,
-        controlsConfiguration: BetterPlayerControlsConfiguration(
-          enableSkips: true,
-          skipBackIcon: Icons.replay_10,
-          skipForwardIcon: Icons.forward_10,
-        ),
-      ),
-      betterPlayerDataSource: dataSource,
-    );
-
-    setState(() => _isLoading = false);
+    try {
+      await _controller!.initialize();
+      await _controller!.play();
+      setState(() => _isLoading = false);
+    } catch (e) {
+      setState(() {
+        _error = 'Failed to play video: $e';
+        _isLoading = false;
+      });
+    }
   }
 
-  void _switchServer(StreamData stream) {
-    _controller?.dispose();
-    setState(() => _isLoading = true);
-    _initializePlayer(stream);
+  void _switchServer(int index) {
+    if (index != _currentServerIndex) {
+      _currentServerIndex = index;
+      _initializePlayer(index);
+    }
+  }
+
+  void _skipIntro() {
+    final intro = _streamData?.streams[_currentServerIndex].skips?.intro;
+    if (intro != null) {
+      _controller?.seekTo(intro.endDuration);
+    }
+  }
+
+  void _skipOutro() {
+    final outro = _streamData?.streams[_currentServerIndex].skips?.outro;
+    if (outro != null) {
+      _controller?.seekTo(outro.endDuration);
+    }
   }
 
   @override
@@ -445,382 +702,169 @@ class _VideoPlayerScreenState extends State<VideoPlayerScreen> {
 
   @override
   Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: Colors.black,
+      appBar: AppBar(
+        title: Text('Episode ${widget.episodeId}'),
+        backgroundColor: Colors.transparent,
+      ),
+      body: _buildBody(),
+    );
+  }
+
+  Widget _buildBody() {
     if (_error != null) {
-      return Scaffold(
-        body: Center(child: Text('Error: $_error')),
+      return Center(
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Icon(Icons.error, color: Colors.red, size: 48),
+            SizedBox(height: 16),
+            Text(_error!, style: TextStyle(color: Colors.white)),
+            SizedBox(height: 16),
+            ElevatedButton(
+              onPressed: _loadStream,
+              child: Text('Retry'),
+            ),
+          ],
+        ),
       );
     }
 
     if (_isLoading) {
-      return const Scaffold(
-        body: Center(child: CircularProgressIndicator()),
-      );
+      return Center(child: CircularProgressIndicator());
     }
 
-    return Scaffold(
-      backgroundColor: Colors.black,
-      body: Column(
-        children: [
-          // Video Player
-          AspectRatio(
-            aspectRatio: 16 / 9,
-            child: BetterPlayer(controller: _controller!),
-          ),
-          
-          // Server Selection
-          if (_streamData != null)
-            Container(
-              height: 50,
-              child: ListView.builder(
-                scrollDirection: Axis.horizontal,
-                itemCount: _streamData!.streams.length,
-                itemBuilder: (context, index) {
-                  final stream = _streamData!.streams[index];
-                  return Padding(
-                    padding: const EdgeInsets.all(8.0),
-                    child: ElevatedButton(
-                      onPressed: () => _switchServer(stream),
-                      child: Text(stream.name),
-                    ),
-                  );
-                },
-              ),
-            ),
-            
-          // Skip Intro/Outro Buttons
-          if (_streamData?.streams.first.skips != null)
-            _buildSkipButtons(_streamData!.streams.first.skips!),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildSkipButtons(SkipTimes skips) {
-    return Row(
-      mainAxisAlignment: MainAxisAlignment.center,
+    return Column(
       children: [
-        if (skips.intro != null)
-          ElevatedButton(
-            onPressed: () {
-              _controller?.seekTo(Duration(seconds: skips.intro!.end));
-            },
-            child: const Text('Skip Intro'),
+        // Video Player
+        AspectRatio(
+          aspectRatio: _controller!.value.aspectRatio,
+          child: VideoPlayer(_controller!),
+        ),
+
+        // Controls
+        VideoProgressIndicator(_controller!, allowScrubbing: true),
+        
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            IconButton(
+              icon: Icon(Icons.replay_10, color: Colors.white),
+              onPressed: () {
+                final pos = _controller!.value.position;
+                _controller!.seekTo(pos - Duration(seconds: 10));
+              },
+            ),
+            IconButton(
+              icon: Icon(
+                _controller!.value.isPlaying ? Icons.pause : Icons.play_arrow,
+                color: Colors.white,
+                size: 48,
+              ),
+              onPressed: () {
+                setState(() {
+                  _controller!.value.isPlaying
+                      ? _controller!.pause()
+                      : _controller!.play();
+                });
+              },
+            ),
+            IconButton(
+              icon: Icon(Icons.forward_10, color: Colors.white),
+              onPressed: () {
+                final pos = _controller!.value.position;
+                _controller!.seekTo(pos + Duration(seconds: 10));
+              },
+            ),
+          ],
+        ),
+
+        // Skip Buttons
+        if (_streamData?.streams[_currentServerIndex].skips != null)
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              if (_streamData!.streams[_currentServerIndex].skips?.intro != null)
+                ElevatedButton(
+                  onPressed: _skipIntro,
+                  child: Text('Skip Intro'),
+                ),
+              SizedBox(width: 16),
+              if (_streamData!.streams[_currentServerIndex].skips?.outro != null)
+                ElevatedButton(
+                  onPressed: _skipOutro,
+                  child: Text('Skip Outro'),
+                ),
+            ],
           ),
-        const SizedBox(width: 16),
-        if (skips.outro != null)
-          ElevatedButton(
-            onPressed: () {
-              _controller?.seekTo(Duration(seconds: skips.outro!.end));
-            },
-            child: const Text('Skip Outro'),
-          ),
+
+        // Server Selection
+        SizedBox(height: 16),
+        Text('Servers', style: TextStyle(color: Colors.white, fontSize: 16)),
+        SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          children: List.generate(_streamData!.streams.length, (index) {
+            final stream = _streamData!.streams[index];
+            final isSelected = index == _currentServerIndex;
+            return ChoiceChip(
+              label: Text(stream.name),
+              selected: isSelected,
+              onSelected: (_) => _switchServer(index),
+            );
+          }),
+        ),
       ],
     );
   }
 }
 ```
 
-### Option 2: Using video_player + chewie
+---
 
-```dart
-import 'package:video_player/video_player.dart';
-import 'package:chewie/chewie.dart';
+## 📋 Complete Endpoint Reference
 
-class ChewieVideoPlayer extends StatefulWidget {
-  final String episodeId;
-
-  const ChewieVideoPlayer({required this.episodeId});
-
-  @override
-  _ChewieVideoPlayerState createState() => _ChewieVideoPlayerState();
-}
-
-class _ChewieVideoPlayerState extends State<ChewieVideoPlayer> {
-  VideoPlayerController? _videoController;
-  ChewieController? _chewieController;
-  bool _isLoading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _initPlayer();
-  }
-
-  Future<void> _initPlayer() async {
-    try {
-      final response = await HiAnimeApiService.getStreamingLinks(
-        episodeId: widget.episodeId,
-        includeProxy: true,
-      );
-
-      final stream = response.streams.first;
-      final source = stream.sources.first;
-
-      // Prefer proxy URL (no headers needed)
-      final videoUrl = source.proxyUrl != null
-          ? '${HiAnimeApiService.baseUrl}${source.proxyUrl}'
-          : source.file;
-
-      _videoController = VideoPlayerController.networkUrl(
-        Uri.parse(videoUrl),
-        httpHeaders: source.proxyUrl != null ? {} : stream.headers,
-      );
-
-      await _videoController!.initialize();
-
-      _chewieController = ChewieController(
-        videoPlayerController: _videoController!,
-        autoPlay: true,
-        aspectRatio: 16 / 9,
-        allowFullScreen: true,
-        allowMuting: true,
-        showControls: true,
-      );
-
-      setState(() => _isLoading = false);
-    } catch (e) {
-      print('Error initializing player: $e');
-    }
-  }
-
-  @override
-  void dispose() {
-    _videoController?.dispose();
-    _chewieController?.dispose();
-    super.dispose();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (_isLoading) {
-      return const Center(child: CircularProgressIndicator());
-    }
-
-    return Chewie(controller: _chewieController!);
-  }
-}
-```
+| Endpoint | Method | Description | For Mobile |
+|----------|--------|-------------|------------|
+| `/api/search?keyword={q}` | GET | Search anime | ✅ |
+| `/api/anime/{slug}` | GET | Anime details | ✅ |
+| `/api/episodes/{slug}` | GET | Episode list | ✅ |
+| `/api/servers/{episode_id}` | GET | Available servers | ✅ |
+| `/api/sources/{episode_id}` | GET | Embed URLs | ⚠️ Not for playback |
+| `/api/stream/{episode_id}` | GET | **Streaming URLs** | ⭐ USE THIS |
+| `/api/proxy/m3u8?url=...&ref=...` | GET | M3U8 proxy | ⭐ Auto-used |
+| `/api/proxy/segment?url=...&ref=...` | GET | Segment proxy | ⭐ Auto-used |
+| `/api/extract-stream?url=...` | GET | Extract from embed | ✅ |
 
 ---
 
-## 📱 Complete App Flow Example
+## 🔑 Key Takeaways
 
-```dart
-// main.dart
-void main() {
-  runApp(const MyApp());
-}
-
-class MyApp extends StatelessWidget {
-  const MyApp({super.key});
-
-  @override
-  Widget build(BuildContext context) {
-    return MaterialApp(
-      title: 'Anime App',
-      theme: ThemeData.dark(),
-      home: const SearchScreen(),
-    );
-  }
-}
-
-// search_screen.dart
-class SearchScreen extends StatefulWidget {
-  const SearchScreen({super.key});
-
-  @override
-  State<SearchScreen> createState() => _SearchScreenState();
-}
-
-class _SearchScreenState extends State<SearchScreen> {
-  final _searchController = TextEditingController();
-  List<SearchResult> _results = [];
-  bool _isLoading = false;
-
-  Future<void> _search() async {
-    if (_searchController.text.isEmpty) return;
-    
-    setState(() => _isLoading = true);
-    
-    try {
-      _results = await HiAnimeApiService.searchAnime(_searchController.text);
-    } catch (e) {
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text('Search failed: $e')),
-      );
-    }
-    
-    setState(() => _isLoading = false);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(title: const Text('Search Anime')),
-      body: Column(
-        children: [
-          Padding(
-            padding: const EdgeInsets.all(16),
-            child: TextField(
-              controller: _searchController,
-              decoration: InputDecoration(
-                hintText: 'Search anime...',
-                suffixIcon: IconButton(
-                  icon: const Icon(Icons.search),
-                  onPressed: _search,
-                ),
-              ),
-              onSubmitted: (_) => _search(),
-            ),
-          ),
-          if (_isLoading) const CircularProgressIndicator(),
-          Expanded(
-            child: ListView.builder(
-              itemCount: _results.length,
-              itemBuilder: (context, index) {
-                final anime = _results[index];
-                return ListTile(
-                  leading: anime.poster != null
-                      ? Image.network(anime.poster!, width: 50)
-                      : null,
-                  title: Text(anime.name),
-                  subtitle: Text(anime.type ?? ''),
-                  onTap: () {
-                    Navigator.push(
-                      context,
-                      MaterialPageRoute(
-                        builder: (_) => EpisodeListScreen(animeSlug: anime.slug),
-                      ),
-                    );
-                  },
-                );
-              },
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-// episode_list_screen.dart  
-class EpisodeListScreen extends StatefulWidget {
-  final String animeSlug;
-
-  const EpisodeListScreen({required this.animeSlug});
-
-  @override
-  State<EpisodeListScreen> createState() => _EpisodeListScreenState();
-}
-
-class _EpisodeListScreenState extends State<EpisodeListScreen> {
-  List<Episode> _episodes = [];
-  bool _isLoading = true;
-
-  @override
-  void initState() {
-    super.initState();
-    _loadEpisodes();
-  }
-
-  Future<void> _loadEpisodes() async {
-    try {
-      _episodes = await HiAnimeApiService.getEpisodes(widget.animeSlug);
-    } catch (e) {
-      print('Error: $e');
-    }
-    setState(() => _isLoading = false);
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    if (_isLoading) {
-      return const Scaffold(body: Center(child: CircularProgressIndicator()));
-    }
-
-    return Scaffold(
-      appBar: AppBar(title: const Text('Episodes')),
-      body: ListView.builder(
-        itemCount: _episodes.length,
-        itemBuilder: (context, index) {
-          final episode = _episodes[index];
-          return ListTile(
-            title: Text('Episode ${episode.number}'),
-            subtitle: episode.title != null ? Text(episode.title!) : null,
-            onTap: () {
-              Navigator.push(
-                context,
-                MaterialPageRoute(
-                  builder: (_) => VideoPlayerScreen(episodeId: episode.id),
-                ),
-              );
-            },
-          );
-        },
-      ),
-    );
-  }
-}
-```
+1. **Always use `include_proxy_url=true`** when calling `/api/stream/`
+2. **Always use `proxy_url`** field for mobile playback
+3. **Never use `file` URL** directly on iOS/Android
+4. **Proxy URLs expire** - always fetch fresh URLs before playing
+5. **No headers needed** when using proxy URLs
 
 ---
 
-## 🔑 Key Points
+## ❓ Troubleshooting
 
-### When to use Direct URL vs Proxy URL
-
-| Scenario | Use | Why |
-|----------|-----|-----|
-| Default | `proxy_url` | Works everywhere, no headers needed |
-| Low latency needed | `file` + `headers` | Direct connection, faster |
-| Cloudflare blocking | `proxy_url` | Bypasses protection |
-| Production server | `proxy_url` | More reliable |
-
-### URL Construction
-
-```dart
-// Direct URL (needs headers)
-final directUrl = streamSource.file;
-final headers = streamData.headers;
-
-// Proxy URL (no headers needed)
-final proxyUrl = '${baseUrl}${streamSource.proxyUrl}';
-// Example: http://127.0.0.1:8000/api/proxy/m3u8?url=aHR0cHM6Ly...
-```
-
-### Error Handling Tips
-
-```dart
-try {
-  // Try proxy URL first (most reliable)
-  await playWithProxy(source.proxyUrl);
-} catch (e) {
-  // Fallback to direct URL with headers
-  await playDirect(source.file, stream.headers);
-}
-```
-
----
-
-## 📋 API Endpoints Summary
-
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/api/search?keyword={query}` | GET | Search anime |
-| `/api/anime/{slug}` | GET | Get anime details |
-| `/api/episodes/{slug}` | GET | Get episode list |
-| `/api/stream/{episode_id}` | GET | Get streaming URLs |
-| `/api/proxy/m3u8?url={base64}` | GET | Proxy for m3u8 streams |
+| Error | Cause | Solution |
+|-------|-------|----------|
+| `OSStatus -12660` | Using `file` URL on iOS | Use `proxy_url` instead |
+| `403 Forbidden` | Expired URL or wrong headers | Get fresh URL from API |
+| `Failed to load` | Network issue | Check internet, retry |
+| No streams | Episode not available | Try different server type |
 
 ---
 
 ## 🚀 Production Checklist
 
-- [ ] Change `baseUrl` to your production server
-- [ ] Add error handling for network failures
-- [ ] Implement retry logic for failed streams
-- [ ] Add loading states and error UI
-- [ ] Cache episode lists locally
-- [ ] Handle app lifecycle (pause/resume video)
-- [ ] Add quality selection UI
-- [ ] Implement subtitle toggle
+- [ ] Use `proxy_url` for all video playback
+- [ ] Handle loading and error states
+- [ ] Implement server switching
+- [ ] Add skip intro/outro buttons
+- [ ] Cache episode lists
+- [ ] Handle app lifecycle (pause on background)
