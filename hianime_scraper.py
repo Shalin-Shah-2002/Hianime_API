@@ -973,6 +973,204 @@ class HiAnimeScraper:
             logger.error(f"Failed to fetch video source: {e}")
             return None
     
+    def extract_stream_url(self, embed_url: str) -> Optional[Dict[str, Any]]:
+        """
+        Extract actual streaming URL (.m3u8) from embed URL
+        
+        This method extracts the actual playable video stream URL from
+        embed URLs (like megacloud.blog). The returned URL can be used
+        directly in video players (VLC, Flutter video_player, etc.)
+        
+        Args:
+            embed_url: The embed URL (e.g., "https://megacloud.blog/embed-2/v3/e-1/xxxxx?k=1")
+            
+        Returns:
+            Dictionary containing:
+            - sources: List of {url, quality, isM3U8} objects
+            - tracks: List of subtitle tracks {url, lang, kind}
+            - intro: Intro skip times {start, end}
+            - outro: Outro skip times {start, end}
+            - headers: Required headers for playback
+        """
+        logger.info(f"Extracting stream from: {embed_url}")
+        
+        try:
+            # Use external decryption service (similar to consumet.ts)
+            # Properly encode the URL
+            from urllib.parse import quote as url_quote
+            encoded_url = url_quote(embed_url, safe='')
+            api_url = f"https://crawlr.cc/9D7F1B3E8?url={encoded_url}"
+            
+            logger.info(f"Calling extraction API: {api_url[:80]}...")
+            
+            headers = self.client._get_headers()
+            headers['Accept'] = 'application/json'
+            
+            response = self.client.session.get(
+                api_url,
+                headers=headers,
+                timeout=30
+            )
+            
+            if response.status_code != 200:
+                logger.error(f"Stream extraction failed with status {response.status_code}")
+                return None
+            
+            data = response.json()
+            logger.info(f"Extraction API response: sources={bool(data.get('sources'))}, tracks={bool(data.get('tracks'))}")
+            
+            if not data.get('sources'):
+                logger.warning("No sources found in extraction response")
+                return None
+            
+            # Get headers from API response or use defaults
+            api_headers = data.get('headers', {})
+            
+            # Format the response
+            result = {
+                "sources": [],
+                "tracks": [],
+                "intro": data.get('intro'),
+                "outro": data.get('outro'),
+                "headers": {
+                    "Referer": api_headers.get('Referer', embed_url),
+                    "User-Agent": api_headers.get('User-Agent', headers.get('User-Agent', ''))
+                }
+            }
+            
+            # Process sources
+            for src in data.get('sources', []):
+                source_url = src.get('url', src.get('file', ''))
+                if source_url:
+                    result["sources"].append({
+                        "url": source_url,
+                        "quality": src.get('quality', 'auto'),
+                        "isM3U8": '.m3u8' in source_url
+                    })
+            
+            # Process subtitle tracks (handle null/None)
+            tracks_data = data.get('tracks')
+            if tracks_data and isinstance(tracks_data, list):
+                for track in tracks_data:
+                    if isinstance(track, dict):
+                        track_file = track.get('file', track.get('url', ''))
+                        if track_file:
+                            result["tracks"].append({
+                                "url": track_file,
+                                "lang": track.get('label', 'Unknown'),
+                                "kind": track.get('kind', 'captions')
+                            })
+            
+            logger.info(f"Extracted {len(result['sources'])} sources and {len(result['tracks'])} tracks")
+            return result
+            
+        except Exception as e:
+            logger.error(f"Failed to extract stream: {e}", exc_info=True)
+            return None
+    
+    def get_streaming_links(self, episode_id: str, server_type: str = "sub") -> Dict[str, Any]:
+        """
+        Get actual streaming links (.m3u8) for an episode
+        
+        This method returns playable video URLs that can be used directly
+        in video players like VLC, Flutter video_player, ExoPlayer, etc.
+        
+        Args:
+            episode_id: Episode ID (e.g., "2142")
+            server_type: Preferred type - "sub", "dub", or "all"
+            
+        Returns:
+            Dictionary with:
+            - episode_id: The episode ID
+            - streams: List of stream objects with actual playable URLs
+            - headers: Required headers for playback (important for CORS)
+        """
+        logger.info(f"Getting streaming links for episode {episode_id}")
+        
+        # First get the embed URLs
+        sources_data = self.get_episode_sources(episode_id, server_type)
+        
+        if not sources_data.get('sources'):
+            return {
+                "episode_id": episode_id,
+                "streams": [],
+                "error": "No sources found"
+            }
+        
+        streams = []
+        
+        for source in sources_data['sources']:
+            # Get the embed URL
+            embed_sources = source.get('sources', [])
+            if not embed_sources:
+                continue
+            
+            embed_url = embed_sources[0].get('url', '')
+            if not embed_url or 'iframe' not in embed_sources[0].get('type', ''):
+                continue
+            
+            # Extract actual stream URL
+            stream_data = self.extract_stream_url(embed_url)
+            
+            if stream_data and stream_data.get('sources'):
+                server_name = source.get('server_name', 'Unknown')
+                
+                # Format sources with better naming
+                formatted_sources = []
+                for src in stream_data['sources']:
+                    stream_url = src.get('url', '')
+                    # Extract domain for identification
+                    domain = ""
+                    if stream_url:
+                        try:
+                            from urllib.parse import urlparse
+                            parsed = urlparse(stream_url)
+                            domain = parsed.netloc
+                        except:
+                            domain = "unknown"
+                    
+                    formatted_sources.append({
+                        "file": stream_url,  # Renamed from 'url' to 'file'
+                        "type": "hls" if '.m3u8' in stream_url else "mp4",
+                        "quality": src.get('quality', 'auto'),
+                        "isM3U8": '.m3u8' in stream_url,
+                        "host": domain  # Added host/domain for identification
+                    })
+                
+                # Format subtitle tracks
+                formatted_tracks = []
+                for track in stream_data.get('tracks', []):
+                    formatted_tracks.append({
+                        "file": track.get('url', ''),
+                        "label": track.get('lang', 'Unknown'),
+                        "kind": track.get('kind', 'captions')
+                    })
+                
+                streams.append({
+                    "name": f"{server_name} ({source.get('server_type', server_type).upper()})",
+                    "server_name": server_name,
+                    "server_type": source.get('server_type', server_type),
+                    "sources": formatted_sources,
+                    "subtitles": formatted_tracks,
+                    "skips": {
+                        "intro": stream_data.get('intro'),
+                        "outro": stream_data.get('outro')
+                    },
+                    "headers": stream_data.get('headers', {})
+                })
+        
+        return {
+            "success": True,
+            "episode_id": episode_id,
+            "server_type": server_type,
+            "total_streams": len(streams),
+            "streams": streams,
+            "usage": {
+                "flutter": "Use 'file' as video URL with 'headers' in httpHeaders",
+                "note": "Always include headers when fetching stream URLs"
+            }
+        }
+    
     def get_episode_sources(self, episode_id: str, server_type: str = "sub") -> Dict[str, Any]:
         """
         Get all video sources for an episode

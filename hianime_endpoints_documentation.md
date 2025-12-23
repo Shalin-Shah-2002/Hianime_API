@@ -1,103 +1,689 @@
-# HiAnime.to - Comprehensive Endpoint & API Documentation
+# HiAnime + MAL Scraper API Documentation
 
 ## 📋 Overview
 
-**Website:** https://hianime.to  
-**Domain CDN:** cdn.noitatnemucod.net  
-**Analysis Date:** December 18, 2025  
-**robots.txt Status:** Permissive (Allow: /)  
+**API Version:** 2.0.0  
+**Base URL:** `https://hianime-api-b6ix.onrender.com`  
+**Documentation:** `/docs` (Swagger UI) | `/redoc` (ReDoc)  
+**Last Updated:** December 23, 2025  
+
+This API provides REST endpoints for scraping anime data from HiAnime.to and integrates with MyAnimeList's official API.
 
 ---
 
-## 🔐 Legal & Compliance Notes
+## 🚀 Quick Start
 
-- **robots.txt**: `Allow: /` - No restrictions on crawling
-- **Sitemap**: Available at `https://hianime.to/sitemap.xml`
-- **Terms of Service**: Available at `https://hianime.to/terms`
-- **DMCA Policy**: Available at `https://hianime.to/dmca`
-- **Content Notice**: "HiAnime does not store any files on our server, we only linked to the media which is hosted on 3rd party services"
+```bash
+# Health Check
+curl https://hianime-api-b6ix.onrender.com/
 
----
+# Search for anime
+curl "https://hianime-api-b6ix.onrender.com/api/search?keyword=naruto"
 
-## 🌐 Base URL Structure
-
-```
-Base URL: https://hianime.to
-CDN (Images/Thumbnails): https://cdn.noitatnemucod.net
+# Get anime details
+curl "https://hianime-api-b6ix.onrender.com/api/anime/naruto-677"
 ```
 
 ---
 
-## 📚 Discovered Endpoints
+## 📊 Response Format
 
-### 1. Homepage & Main Navigation
+All endpoints return JSON with a consistent structure:
 
-| Endpoint | Method | Description |
-|----------|--------|-------------|
-| `/` | GET | Main landing page |
-| `/home` | GET | Home page (alternate) |
+### Success Response
+```json
+{
+  "success": true,
+  "count": 10,
+  "page": 1,
+  "data": [...]
+}
+```
+
+### Error Response
+```json
+{
+  "success": false,
+  "error": "Error message description"
+}
+```
 
 ---
 
-### 2. Search Endpoints
+## 🔍 API Endpoints
 
-#### Basic Search
-```
-GET /search?keyword={query}
+### Root / Health Check
+
+#### `GET /`
+API health check and endpoint listing.
+
+**Response:**
+```json
+{
+  "status": "online",
+  "api": "HiAnime + MAL Scraper API",
+  "version": "2.0.0",
+  "mal_enabled": true,
+  "total_endpoints": 24,
+  "endpoints": {...}
+}
 ```
 
-**Parameters:**
-| Parameter | Type | Required | Description |
-|-----------|------|----------|-------------|
-| `keyword` | string | Yes | URL-encoded search term |
+---
+
+## 🔎 Search Endpoints
+
+### Search Anime
+
+#### `GET /api/search`
+Search for anime by keyword.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `keyword` | string | ✅ Yes | - | Search term (min 1 character) |
+| `page` | integer | No | 1 | Page number (≥1) |
 
 **Example:**
-```
-https://hianime.to/search?keyword=naruto
-https://hianime.to/search?keyword=Chainsaw%20Man%20the%20Movie%3A%20Reze%20Arc
-```
-
-#### Advanced Filter Search
-```
-GET /filter
-GET /filter?type={type}&status={status}&rated={rated}&score={score}&season={season}&language={language}&start_date={date}&end_date={date}&sort={sort}&genres={genres}&page={page}
+```bash
+GET /api/search?keyword=naruto&page=1
 ```
 
-**Filter Parameters:**
-| Parameter | Type | Values | Description |
-|-----------|------|--------|-------------|
-| `type` | string | movie, tv, ova, ona, special, music | Anime type filter |
-| `status` | string | finished, airing, upcoming | Airing status |
-| `rated` | string | g, pg, pg-13, r, r+, rx | Age rating |
-| `score` | int | 1-10 | Minimum MAL score |
-| `season` | string | spring, summer, fall, winter | Season filter |
-| `language` | string | sub, dub | Audio language |
-| `start_date` | date | YYYY-MM-DD | Aired after date |
-| `end_date` | date | YYYY-MM-DD | Aired before date |
-| `sort` | string | default, recently_added, recently_updated, score, name_az, released_date, most_watched | Sort order |
-| `genres` | string | action,adventure,... | Comma-separated genres |
-| `page` | int | 1-n | Pagination |
+**Response:**
+```json
+{
+  "success": true,
+  "count": 20,
+  "page": 1,
+  "data": [
+    {
+      "title": "Naruto",
+      "slug": "naruto-677",
+      "url": "https://hianime.to/naruto-677",
+      "poster": "https://cdn.noitatnemucod.net/...",
+      "type": "TV",
+      "episodes": {"sub": 220, "dub": 220},
+      "duration": "23m"
+    }
+  ]
+}
+```
+
+---
+
+## 📂 Browse Endpoints
+
+### Get Popular Anime
+
+#### `GET /api/popular`
+Get most popular anime.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `page` | integer | No | 1 | Page number |
+
+**Example:**
+```bash
+GET /api/popular?page=1
+```
+
+---
+
+### Get Top Airing
+
+#### `GET /api/top-airing`
+Get currently airing popular anime.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `page` | integer | No | 1 | Page number |
+
+**Example:**
+```bash
+GET /api/top-airing?page=1
+```
+
+---
+
+### Get Recently Updated
+
+#### `GET /api/recently-updated`
+Get recently updated anime with new episodes.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `page` | integer | No | 1 | Page number |
+
+**Example:**
+```bash
+GET /api/recently-updated?page=1
+```
+
+---
+
+### Get Completed Anime
+
+#### `GET /api/completed`
+Get completed anime series.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `page` | integer | No | 1 | Page number |
+
+**Example:**
+```bash
+GET /api/completed?page=1
+```
+
+---
+
+### Get Subbed Anime
+
+#### `GET /api/subbed`
+Get anime with subtitles.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `page` | integer | No | 1 | Page number |
+
+**Example:**
+```bash
+GET /api/subbed?page=1
+```
+
+---
+
+### Get Dubbed Anime
+
+#### `GET /api/dubbed`
+Get dubbed anime.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `page` | integer | No | 1 | Page number |
+
+**Example:**
+```bash
+GET /api/dubbed?page=1
+```
+
+---
+
+## 🏷️ Genre & Type Endpoints
+
+### Get Anime by Genre
+
+#### `GET /api/genre/{genre}`
+Get anime filtered by genre.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `genre` | string | ✅ Yes | Genre slug (path parameter) |
+| `page` | integer | No | Page number |
 
 **Available Genres:**
 ```
 action, adventure, cars, comedy, dementia, demons, drama, ecchi, fantasy, 
-game, harem, historical, horror, isekai, josei, kids, magic, marial-arts, 
+game, harem, historical, horror, isekai, josei, kids, magic, martial-arts, 
 mecha, military, music, mystery, parody, police, psychological, romance, 
 samurai, school, sci-fi, seinen, shoujo, shoujo-ai, shounen, shounen-ai, 
 slice-of-life, space, sports, super-power, supernatural, thriller, vampire
 ```
 
+**Example:**
+```bash
+GET /api/genre/action?page=1
+```
+
 ---
 
-### 3. Browse Endpoints
+### Get Anime by Type
 
-#### By Category
-| Endpoint | Description | Pagination |
-|----------|-------------|------------|
-| `/most-popular` | Most popular anime | `?page=1` (50 pages) |
-| `/top-airing` | Currently airing popular | `?page=1` (11 pages) |
-| `/recently-updated` | Recently updated episodes | `?page=1` (213 pages) |
-| `/completed` | Completed anime | `?page=1` (208 pages) |
+#### `GET /api/type/{type_name}`
+Get anime filtered by type.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `type_name` | string | ✅ Yes | Anime type (path parameter) |
+| `page` | integer | No | Page number |
+
+**Available Types:**
+- `movie` - Anime movies
+- `tv` - TV series
+- `ova` - Original Video Animation
+- `ona` - Original Net Animation
+- `special` - Special episodes
+- `music` - Music videos
+
+**Example:**
+```bash
+GET /api/type/movie?page=1
+```
+
+---
+
+## 🔧 Advanced Filter
+
+#### `GET /api/filter`
+Advanced search with multiple filters.
+
+| Parameter | Type | Required | Values | Description |
+|-----------|------|----------|--------|-------------|
+| `type` | string | No | `movie`, `tv`, `ova`, `ona`, `special`, `music` | Anime type |
+| `status` | string | No | `finished`, `airing`, `upcoming` | Airing status |
+| `rated` | string | No | `g`, `pg`, `pg-13`, `r`, `r+`, `rx` | Age rating |
+| `score` | integer | No | 1-10 | Minimum score |
+| `season` | string | No | `spring`, `summer`, `fall`, `winter` | Season |
+| `language` | string | No | `sub`, `dub` | Audio language |
+| `genres` | string | No | Comma-separated | Genre filters |
+| `sort` | string | No | See below | Sort order |
+| `page` | integer | No | ≥1 | Page number |
+
+**Sort Options:**
+- `default` - Default sorting
+- `recently_added` - Newest first
+- `recently_updated` - Recently updated
+- `score` - Highest score first
+- `name_az` - Alphabetical A-Z
+- `released_date` - By release date
+- `most_watched` - Most popular
+
+**Example:**
+```bash
+GET /api/filter?type=tv&status=airing&genres=action,fantasy&sort=score&page=1
+```
+
+---
+
+## 📝 Anime Details
+
+### Get Anime Information
+
+#### `GET /api/anime/{slug}`
+Get detailed information about a specific anime.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `slug` | string | ✅ Yes | Anime slug with ID (e.g., `naruto-677`) |
+
+**Example:**
+```bash
+GET /api/anime/naruto-677
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "data": {
+    "title": "Naruto",
+    "japanese_title": "ナルト",
+    "slug": "naruto-677",
+    "poster": "https://cdn.noitatnemucod.net/...",
+    "description": "...",
+    "type": "TV",
+    "status": "Finished Airing",
+    "aired": "Oct 3, 2002 to Feb 8, 2007",
+    "premiered": "Fall 2002",
+    "duration": "23m",
+    "episodes": {"sub": 220, "dub": 220},
+    "studios": ["Studio Pierrot"],
+    "producers": ["TV Tokyo", "Aniplex"],
+    "genres": ["Action", "Adventure", "Fantasy"],
+    "score": "8.0"
+  }
+}
+```
+
+---
+
+## 📺 Episodes
+
+### Get Episode List
+
+#### `GET /api/episodes/{slug}`
+Get full episode list for an anime.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `slug` | string | ✅ Yes | Anime slug with ID |
+
+**Example:**
+```bash
+GET /api/episodes/naruto-677
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "count": 220,
+  "data": [
+    {
+      "number": 1,
+      "title": "Enter: Naruto Uzumaki!",
+      "japanese_title": "参上！うずまきナルト",
+      "url": "https://hianime.to/watch/naruto-677?ep=12345",
+      "episode_id": "12345",
+      "filler": false
+    }
+  ]
+}
+```
+
+---
+
+## 🔤 A-Z List
+
+#### `GET /api/az/{letter}`
+Get anime alphabetically by first letter.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `letter` | string | ✅ Yes | Single letter A-Z or `other` |
+| `page` | integer | No | Page number |
+
+**Example:**
+```bash
+GET /api/az/N?page=1
+GET /api/az/other?page=1
+```
+
+---
+
+## 🏭 Producer / Studio
+
+#### `GET /api/producer/{producer_slug}`
+Get anime by producer or studio.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `producer_slug` | string | ✅ Yes | Producer/studio slug |
+| `page` | integer | No | Page number |
+
+**Example Slugs:**
+- `studio-pierrot`
+- `mappa`
+- `toei-animation`
+- `ufotable`
+- `wit-studio`
+- `bones`
+
+**Example:**
+```bash
+GET /api/producer/mappa?page=1
+```
+
+---
+
+## 🔵 MyAnimeList Endpoints
+
+> **Note:** MAL endpoints require the MAL API to be configured on the server.
+
+### MAL Search
+
+#### `GET /api/mal/search`
+Search anime on MyAnimeList.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `query` | string | ✅ Yes | - | Search query |
+| `limit` | integer | No | 10 | Results limit (1-100) |
+
+**Example:**
+```bash
+GET /api/mal/search?query=naruto&limit=10
+```
+
+---
+
+### MAL Anime Details
+
+#### `GET /api/mal/anime/{mal_id}`
+Get anime details from MyAnimeList by ID.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `mal_id` | integer | ✅ Yes | MyAnimeList anime ID |
+
+**Example:**
+```bash
+GET /api/mal/anime/20
+```
+
+---
+
+### MAL Ranking
+
+#### `GET /api/mal/ranking`
+Get anime rankings from MyAnimeList.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `type` | string | No | `all` | Ranking type |
+| `limit` | integer | No | 10 | Results limit (1-100) |
+
+**Ranking Types:**
+- `all` - Top Anime Series
+- `airing` - Top Airing Anime
+- `upcoming` - Top Upcoming Anime
+- `tv` - Top TV Series
+- `movie` - Top Movies
+- `bypopularity` - Most Popular
+- `favorite` - Most Favorited
+
+**Example:**
+```bash
+GET /api/mal/ranking?type=airing&limit=20
+```
+
+---
+
+### MAL Seasonal Anime
+
+#### `GET /api/mal/seasonal`
+Get seasonal anime from MyAnimeList.
+
+| Parameter | Type | Required | Description |
+|-----------|------|----------|-------------|
+| `year` | integer | ✅ Yes | Year (e.g., 2024) |
+| `season` | string | ✅ Yes | `winter`, `spring`, `summer`, `fall` |
+| `limit` | integer | No | Results limit (1-100) |
+
+**Seasons:**
+- `winter` - January to March
+- `spring` - April to June
+- `summer` - July to September
+- `fall` - October to December
+
+**Example:**
+```bash
+GET /api/mal/seasonal?year=2024&season=fall&limit=20
+```
+
+---
+
+## 🔐 MAL User Authentication
+
+These endpoints allow users to authenticate with their own MAL credentials.
+
+### Get Auth URL
+
+#### `POST /api/mal/user/auth`
+Get OAuth2 authorization URL for MAL user login.
+
+**Request Body:**
+```json
+{
+  "client_id": "your_mal_client_id",
+  "client_secret": "your_mal_client_secret",
+  "redirect_uri": "https://your-app.com/callback"
+}
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "message": "Open auth_url in browser to login. Save code_verifier for token exchange.",
+  "privacy_notice": "We DO NOT store your credentials. This request is stateless.",
+  "data": {
+    "auth_url": "https://myanimelist.net/v1/oauth2/authorize?...",
+    "code_verifier": "abc123...",
+    "state": "xyz789..."
+  }
+}
+```
+
+---
+
+### Exchange Token
+
+#### `POST /api/mal/user/token`
+Exchange authorization code for access token.
+
+**Request Body:**
+```json
+{
+  "client_id": "your_mal_client_id",
+  "client_secret": "your_mal_client_secret",
+  "code": "authorization_code_from_callback",
+  "code_verifier": "code_verifier_from_previous_step",
+  "redirect_uri": "https://your-app.com/callback"
+}
+```
+
+---
+
+### Get User Anime List
+
+#### `POST /api/mal/user/animelist`
+Get authenticated user's anime list.
+
+**Request Body:**
+```json
+{
+  "client_id": "your_mal_client_id",
+  "access_token": "user_access_token",
+  "status": "watching",
+  "limit": 100
+}
+```
+
+**Status Options:**
+- `watching`
+- `completed`
+- `on_hold`
+- `dropped`
+- `plan_to_watch`
+- *(empty for all)*
+
+---
+
+### Get User Profile
+
+#### `POST /api/mal/user/profile`
+Get authenticated user's MAL profile.
+
+**Request Body:**
+```json
+{
+  "client_id": "your_mal_client_id",
+  "access_token": "user_access_token"
+}
+```
+
+---
+
+## 🔗 Combined Endpoints
+
+### Combined Search
+
+#### `GET /api/combined/search`
+Search both HiAnime and MyAnimeList simultaneously.
+
+| Parameter | Type | Required | Default | Description |
+|-----------|------|----------|---------|-------------|
+| `query` | string | ✅ Yes | - | Search query |
+| `limit` | integer | No | 5 | Results per source (1-20) |
+
+**Example:**
+```bash
+GET /api/combined/search?query=demon%20slayer&limit=5
+```
+
+**Response:**
+```json
+{
+  "success": true,
+  "query": "demon slayer",
+  "sources": {
+    "hianime": {
+      "enabled": true,
+      "count": 5,
+      "results": [...],
+      "error": null
+    },
+    "myanimelist": {
+      "enabled": true,
+      "count": 5,
+      "results": [...],
+      "error": null
+    }
+  }
+}
+```
+
+---
+
+## 📖 Interactive Documentation
+
+Access interactive API documentation:
+
+- **Swagger UI:** `https://hianime-api-b6ix.onrender.com/docs`
+- **ReDoc:** `https://hianime-api-b6ix.onrender.com/redoc`
+
+---
+
+## ⚠️ Error Codes
+
+| Status Code | Description |
+|-------------|-------------|
+| `200` | Success |
+| `400` | Bad Request - Invalid parameters |
+| `404` | Not Found - Anime/resource not found |
+| `500` | Internal Server Error |
+| `503` | Service Unavailable - MAL API not configured |
+
+---
+
+## 📝 Rate Limiting
+
+The API implements rate limiting to prevent abuse. Please be respectful of the service.
+
+---
+
+## 🛠️ Running Locally
+
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run the server
+uvicorn api:app --reload --port 8000
+
+# Access locally
+http://localhost:8000
+http://localhost:8000/docs
+```
+
+---
+
+## 📜 Legal Notice
+
+- This API scrapes data from HiAnime.to for educational purposes
+- HiAnime does not store files on their servers
+- MyAnimeList data is accessed via official MAL API
+- Use responsibly and respect terms of service
 | `/subbed-anime` | Anime with subtitles | `?page=1` |
 | `/dubbed-anime` | Dubbed anime | `?page=1` |
 

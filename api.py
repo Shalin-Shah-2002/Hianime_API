@@ -8,10 +8,12 @@ Run with: uvicorn api:app --reload --port 8000
 
 from fastapi import FastAPI, HTTPException, Query, Body
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse, Response
 from typing import Optional, List
 from pydantic import BaseModel
 from dataclasses import asdict
+import httpx
+import base64
 
 from hianime_scraper import HiAnimeScraper, SearchResult, AnimeInfo, Episode, VideoServer, VideoSource
 
@@ -98,9 +100,9 @@ async def root():
     return {
         "status": "online",
         "api": "HiAnime + MAL Scraper API",
-        "version": "2.1.0",
+        "version": "2.2.0",
         "mal_enabled": MAL_ENABLED,
-        "total_endpoints": 27 if MAL_ENABLED else 19,
+        "total_endpoints": 29 if MAL_ENABLED else 21,
         "endpoints": {
             "search": "/api/search?keyword=naruto",
             "filter": "/api/filter?type=tv&status=airing",
@@ -119,6 +121,8 @@ async def root():
             "video_servers": "/api/servers/{episode_id}",
             "video_sources": "/api/sources/{episode_id}?server_type=sub",
             "watch_sources": "/api/watch/{anime_slug}?ep={episode_id}&server_type=sub",
+            "streaming_links": "/api/stream/{episode_id}?server_type=sub  ⭐ USE THIS FOR FLUTTER!",
+            "extract_stream": "/api/extract-stream?url={embed_url}",
             "mal_search": "/api/mal/search?query=naruto",
             "mal_details": "/api/mal/anime/{mal_id}",
             "mal_ranking": "/api/mal/ranking?type=all",
@@ -547,6 +551,89 @@ async def get_watch_sources(
         raise HTTPException(status_code=500, detail=str(e))
 
 
+# -----------------------------------------------------------------------------
+# STREAMING LINKS (Actual playable URLs for Flutter/Mobile Apps)
+# -----------------------------------------------------------------------------
+
+@app.get("/api/stream/{episode_id}", tags=["Video Sources"])
+async def get_streaming_links(
+    episode_id: str,
+    server_type: str = Query("sub", description="Server type: sub, dub, or all"),
+    include_proxy_url: bool = Query(False, description="Include proxied URLs that bypass Cloudflare")
+):
+    """
+    🎬 Get actual streaming links (.m3u8) for video players
+    
+    **USE THIS FOR FLUTTER/MOBILE APPS!**
+    
+    This endpoint returns actual playable video URLs that work directly
+    in video players like:
+    - Flutter: video_player, chewie, better_player
+    - Android: ExoPlayer
+    - iOS: AVPlayer
+    - Desktop: VLC
+    
+    - **episode_id**: Episode ID from the URL (e.g., "2142" from ?ep=2142)
+    - **server_type**: Filter by type - "sub" (default), "dub", or "all"
+    - **include_proxy_url**: If true, adds `proxy_url` field that bypasses Cloudflare
+    
+    **Response includes:**
+    - `streams`: Array with name, file (m3u8 URL), host, subtitles
+    - `headers`: Required headers for playback (important!)
+    - `skips`: intro/outro skip timestamps
+    - `proxy_url`: (optional) URL through our proxy that bypasses Cloudflare
+    
+    **Important:** When playing the video, include the headers from the response!
+    
+    **If streams don't work directly**, use `include_proxy_url=true` and use the
+    `proxy_url` field instead - this routes through our server to bypass blocks.
+    """
+    try:
+        result = scraper.get_streaming_links(episode_id, server_type)
+        
+        # Add proxy URLs if requested
+        if include_proxy_url and result.get('streams'):
+            for stream in result['streams']:
+                for source in stream.get('sources', []):
+                    original_url = source.get('file', '')
+                    if original_url:
+                        encoded = base64.b64encode(original_url.encode()).decode()
+                        source['proxy_url'] = f"/api/proxy/m3u8?url={encoded}"
+        
+        return result  # Already includes success field
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/extract-stream", tags=["Video Sources"])
+async def extract_stream(
+    url: str = Query(..., description="Embed URL to extract stream from")
+):
+    """
+    Extract streaming URL from any supported embed URL
+    
+    Directly extracts playable .m3u8 URL from embed URLs like:
+    - megacloud.blog/embed-2/...
+    - rapid-cloud.co/embed-6/...
+    
+    - **url**: The embed URL to extract from
+    
+    Returns the actual streaming URL that can be played in video players.
+    """
+    try:
+        result = scraper.extract_stream_url(url)
+        if not result:
+            raise HTTPException(status_code=404, detail="Could not extract stream from URL")
+        return {
+            "success": True,
+            **result
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 # =============================================================================
 # MYANIMELIST ENDPOINTS (Public - No Auth Required)
 # =============================================================================
@@ -829,6 +916,121 @@ async def mal_user_get_profile(
             "privacy_notice": "We DO NOT store your profile data.",
             "data": profile
         }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# =============================================================================
+# STREAM PROXY ENDPOINT (Bypass Cloudflare)
+# =============================================================================
+
+@app.get("/api/proxy/m3u8", tags=["Streaming"])
+async def proxy_m3u8(
+    url: str = Query(..., description="Base64 encoded m3u8 URL"),
+    referer: str = Query("https://megacloud.blog/", description="Referer header")
+):
+    """
+    Proxy endpoint to fetch m3u8 streams through the server.
+    This bypasses Cloudflare protection by making the request server-side.
+    
+    Usage:
+    1. Base64 encode your m3u8 URL
+    2. Call: /api/proxy/m3u8?url={base64_encoded_url}
+    
+    Example:
+    - Original URL: https://example.com/master.m3u8
+    - Encoded: aHR0cHM6Ly9leGFtcGxlLmNvbS9tYXN0ZXIubTN1OA==
+    - Call: /api/proxy/m3u8?url=aHR0cHM6Ly9leGFtcGxlLmNvbS9tYXN0ZXIubTN1OA==
+    """
+    try:
+        # Decode URL
+        try:
+            decoded_url = base64.b64decode(url).decode('utf-8')
+        except:
+            # If not base64, try using directly
+            decoded_url = url
+        
+        headers = {
+            "Referer": referer,
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122 Safari/537.36",
+            "Accept": "*/*",
+            "Origin": referer.rstrip('/'),
+        }
+        
+        async with httpx.AsyncClient(timeout=30.0, follow_redirects=True) as client:
+            response = await client.get(decoded_url, headers=headers)
+            
+            if response.status_code != 200:
+                raise HTTPException(
+                    status_code=response.status_code,
+                    detail=f"Upstream returned {response.status_code}"
+                )
+            
+            content = response.content
+            content_type = response.headers.get('content-type', 'application/vnd.apple.mpegurl')
+            
+            # If it's an m3u8 playlist, we need to rewrite the URLs to also go through proxy
+            if b'#EXTM3U' in content or '.m3u8' in decoded_url:
+                # Rewrite relative URLs in the m3u8 to absolute
+                base_url = '/'.join(decoded_url.split('/')[:-1])
+                lines = content.decode('utf-8').split('\n')
+                new_lines = []
+                for line in lines:
+                    if line and not line.startswith('#'):
+                        # This is a URL line
+                        if not line.startswith('http'):
+                            line = f"{base_url}/{line}"
+                    new_lines.append(line)
+                content = '\n'.join(new_lines).encode('utf-8')
+            
+            return Response(
+                content=content,
+                media_type=content_type,
+                headers={
+                    "Access-Control-Allow-Origin": "*",
+                    "Cache-Control": "no-cache"
+                }
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/proxy/ts", tags=["Streaming"])
+async def proxy_ts_segment(
+    url: str = Query(..., description="Base64 encoded .ts segment URL"),
+    referer: str = Query("https://megacloud.blog/", description="Referer header")
+):
+    """
+    Proxy endpoint for .ts video segments.
+    Use this when playing HLS streams that require header authentication.
+    """
+    try:
+        try:
+            decoded_url = base64.b64decode(url).decode('utf-8')
+        except:
+            decoded_url = url
+        
+        headers = {
+            "Referer": referer,
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        }
+        
+        async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+            response = await client.get(decoded_url, headers=headers)
+            
+            if response.status_code != 200:
+                raise HTTPException(status_code=response.status_code, detail="Segment fetch failed")
+            
+            return Response(
+                content=response.content,
+                media_type="video/mp2t",
+                headers={"Access-Control-Allow-Origin": "*"}
+            )
+    except HTTPException:
+        raise
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
