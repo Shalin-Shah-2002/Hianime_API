@@ -973,6 +973,63 @@ class HiAnimeScraper:
             logger.error(f"Failed to fetch video source: {e}")
             return None
     
+    def _get_referer_for_cdn(self, stream_url: str, embed_url: str) -> str:
+        """
+        Get the correct referer header for a specific CDN/streaming URL
+        
+        Different CDNs require different referer headers to work properly.
+        This ensures all streaming URLs work, not just one.
+        
+        Args:
+            stream_url: The actual streaming URL (m3u8)
+            embed_url: The original embed URL
+            
+        Returns:
+            The appropriate referer URL for the CDN
+        """
+        stream_lower = stream_url.lower()
+        embed_lower = embed_url.lower()
+        
+        # Map of CDN domains to their required referers
+        cdn_referer_map = {
+            # MegaCloud family
+            'megacloud': 'https://megacloud.blog/',
+            'rapid-cloud': 'https://rapid-cloud.co/',
+            'rabbitstream': 'https://rabbitstream.net/',
+            
+            # Vidplay/Vidstream family  
+            'vidplay': 'https://vidplay.site/',
+            'vidstream': 'https://vidstream.pro/',
+            'mcloud': 'https://mcloud.to/',
+            
+            # FileMoon family
+            'filemoon': 'https://filemoon.sx/',
+            
+            # New CDNs (sunburst, rainveil, etc.)
+            'sunburst': 'https://megacloud.blog/',
+            'rainveil': 'https://megacloud.blog/',
+            'brstorm': 'https://megacloud.blog/',
+            'binanime': 'https://megacloud.blog/',
+            
+            # Generic CDN patterns
+            'cdn.': 'https://megacloud.blog/',
+            'cache': 'https://megacloud.blog/',
+            'hls': 'https://megacloud.blog/',
+        }
+        
+        # Check stream URL first, then embed URL
+        for cdn_pattern, referer in cdn_referer_map.items():
+            if cdn_pattern in stream_lower or cdn_pattern in embed_lower:
+                return referer
+        
+        # Extract domain from embed URL as fallback
+        try:
+            from urllib.parse import urlparse
+            parsed = urlparse(embed_url)
+            return f"{parsed.scheme}://{parsed.netloc}/"
+        except:
+            return 'https://megacloud.blog/'
+    
     def extract_stream_url(self, embed_url: str) -> Optional[Dict[str, Any]]:
         """
         Extract actual streaming URL (.m3u8) from embed URL
@@ -986,11 +1043,11 @@ class HiAnimeScraper:
             
         Returns:
             Dictionary containing:
-            - sources: List of {url, quality, isM3U8} objects
+            - sources: List of {url, quality, isM3U8, headers} objects (headers per source!)
             - tracks: List of subtitle tracks {url, lang, kind}
             - intro: Intro skip times {start, end}
             - outro: Outro skip times {start, end}
-            - headers: Required headers for playback
+            - headers: Default headers for playback (use source-specific headers when available)
         """
         logger.info(f"Extracting stream from: {embed_url}")
         
@@ -1025,6 +1082,7 @@ class HiAnimeScraper:
             
             # Get headers from API response or use defaults
             api_headers = data.get('headers', {})
+            default_user_agent = api_headers.get('User-Agent', headers.get('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'))
             
             # Format the response
             result = {
@@ -1034,19 +1092,29 @@ class HiAnimeScraper:
                 "outro": data.get('outro'),
                 "headers": {
                     "Referer": api_headers.get('Referer', embed_url),
-                    "User-Agent": api_headers.get('User-Agent', headers.get('User-Agent', ''))
+                    "User-Agent": default_user_agent
                 }
             }
             
-            # Process sources
+            # Process sources - IMPORTANT: Add per-source headers!
             for src in data.get('sources', []):
                 source_url = src.get('url', src.get('file', ''))
                 if source_url:
+                    # Get the correct referer for THIS specific source URL
+                    source_referer = self._get_referer_for_cdn(source_url, embed_url)
+                    
                     result["sources"].append({
                         "url": source_url,
                         "quality": src.get('quality', 'auto'),
-                        "isM3U8": '.m3u8' in source_url
+                        "isM3U8": '.m3u8' in source_url,
+                        # Include per-source headers so each URL works independently
+                        "headers": {
+                            "Referer": source_referer,
+                            "Origin": source_referer.rstrip('/'),
+                            "User-Agent": default_user_agent
+                        }
                     })
+                    logger.info(f"Source URL: {source_url[:60]}... -> Referer: {source_referer}")
             
             # Process subtitle tracks (handle null/None)
             tracks_data = data.get('tracks')
@@ -1115,7 +1183,7 @@ class HiAnimeScraper:
             if stream_data and stream_data.get('sources'):
                 server_name = source.get('server_name', 'Unknown')
                 
-                # Format sources with better naming
+                # Format sources with better naming - INCLUDE PER-SOURCE HEADERS
                 formatted_sources = []
                 for src in stream_data['sources']:
                     stream_url = src.get('url', '')
@@ -1129,12 +1197,17 @@ class HiAnimeScraper:
                         except:
                             domain = "unknown"
                     
+                    # Get per-source headers (this is the key fix!)
+                    source_headers = src.get('headers', stream_data.get('headers', {}))
+                    
                     formatted_sources.append({
                         "file": stream_url,  # Renamed from 'url' to 'file'
                         "type": "hls" if '.m3u8' in stream_url else "mp4",
                         "quality": src.get('quality', 'auto'),
                         "isM3U8": '.m3u8' in stream_url,
-                        "host": domain  # Added host/domain for identification
+                        "host": domain,  # Added host/domain for identification
+                        # CRITICAL: Include per-source headers so ALL URLs work!
+                        "headers": source_headers
                     })
                 
                 # Format subtitle tracks
@@ -1156,6 +1229,7 @@ class HiAnimeScraper:
                         "intro": stream_data.get('intro'),
                         "outro": stream_data.get('outro')
                     },
+                    # Default headers (use source-specific headers in 'sources' array for best results)
                     "headers": stream_data.get('headers', {})
                 })
         
@@ -1166,8 +1240,9 @@ class HiAnimeScraper:
             "total_streams": len(streams),
             "streams": streams,
             "usage": {
-                "flutter": "Use 'file' as video URL with 'headers' in httpHeaders",
-                "note": "Always include headers when fetching stream URLs"
+                "flutter": "Use 'file' as video URL with source-specific 'headers' in httpHeaders",
+                "note": "IMPORTANT: Each source in 'sources' array has its own 'headers' - use those for best results!",
+                "tip": "If a stream doesn't work, make sure you're using the headers from that specific source object"
             }
         }
     

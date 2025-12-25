@@ -8,7 +8,7 @@ Run with: uvicorn api:app --reload --port 8000
 
 from fastapi import FastAPI, HTTPException, Query, Body, Request
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse, Response
+from fastapi.responses import JSONResponse, StreamingResponse, Response, HTMLResponse
 from typing import Optional, List
 from pydantic import BaseModel
 from dataclasses import asdict
@@ -579,12 +579,15 @@ async def get_streaming_links(
     - **include_proxy_url**: If true, adds `proxy_url` field that bypasses Cloudflare
     
     **Response includes:**
-    - `streams`: Array with name, file (m3u8 URL), host, subtitles
-    - `headers`: Required headers for playback (important!)
+    - `streams`: Array with name, sources (each with file, headers), subtitles
+    - `sources[].file`: The m3u8 URL
+    - `sources[].headers`: **Per-source headers** - USE THESE for each URL!
     - `skips`: intro/outro skip timestamps
     - `proxy_url`: (optional) URL through our proxy that bypasses Cloudflare
     
-    **Important:** When playing the video, include the headers from the response!
+    **⚠️ IMPORTANT: Each source has its own headers!**
+    When playing a video, use the `headers` from that specific source object,
+    not the stream-level headers. This ensures ALL streaming URLs work!
     
     **If streams don't work directly**, use `include_proxy_url=true` and use the
     `proxy_url` field instead - this routes through our server to bypass blocks.
@@ -595,16 +598,16 @@ async def get_streaming_links(
         # Add proxy URLs if requested
         if include_proxy_url and result.get('streams'):
             for stream in result['streams']:
-                # Get the referer from stream headers (important for CDN access)
-                stream_headers = stream.get('headers', {})
-                stream_referer = stream_headers.get('Referer', 'https://megacloud.blog/')
-                
                 for source in stream.get('sources', []):
                     original_url = source.get('file', '')
                     if original_url:
                         encoded = base64.b64encode(original_url.encode()).decode()
-                        # Include the correct referer for this stream
-                        encoded_referer = base64.b64encode(stream_referer.encode()).decode()
+                        # Get the referer from THIS source's headers (per-source headers!)
+                        source_headers = source.get('headers', {})
+                        stream_headers = stream.get('headers', {})
+                        # Prefer source-specific referer, fall back to stream headers
+                        source_referer = source_headers.get('Referer', stream_headers.get('Referer', 'https://megacloud.blog/'))
+                        encoded_referer = base64.b64encode(source_referer.encode()).decode()
                         source['proxy_url'] = f"/api/proxy/m3u8?url={encoded}&ref={encoded_referer}"
         
         return result  # Already includes success field
@@ -970,13 +973,20 @@ async def proxy_m3u8(
         
         # Try to determine the correct referer based on the CDN domain
         if not ref:
-            if 'megacloud' in decoded_url or 'rapid-cloud' in decoded_url:
+            url_lower = decoded_url.lower()
+            # Map CDN domains to their required referers
+            if 'megacloud' in url_lower or 'rapid-cloud' in url_lower:
                 actual_referer = "https://megacloud.blog/"
-            elif 'vidplay' in decoded_url or 'vidstream' in decoded_url:
+            elif 'vidplay' in url_lower or 'vidstream' in url_lower:
                 actual_referer = "https://vidplay.site/"
-            elif 'filemoon' in decoded_url:
+            elif 'filemoon' in url_lower:
                 actual_referer = "https://filemoon.sx/"
-            # For other CDNs like rainveil, sunburst, etc., use the embed URL pattern
+            elif 'rabbitstream' in url_lower:
+                actual_referer = "https://rabbitstream.net/"
+            # New CDN patterns (sunburst, rainveil, brstorm, etc.)
+            elif any(cdn in url_lower for cdn in ['sunburst', 'rainveil', 'brstorm', 'binanime', 'cdn.', 'cache', 'hls']):
+                actual_referer = "https://megacloud.blog/"
+            # For other unknown CDNs, use megacloud as default (most common)
             else:
                 actual_referer = "https://megacloud.blog/"
         
@@ -1181,6 +1191,184 @@ async def proxy_ts_segment(
 # =============================================================================
 # COMBINED ENDPOINTS (HiAnime + MAL)
 # =============================================================================
+
+@app.get("/api/player", tags=["Streaming"], response_class=HTMLResponse)
+async def video_player(
+    request: Request,
+    url: str = Query(..., description="Base64 encoded m3u8 URL"),
+    ref: str = Query(None, description="Base64 encoded referer URL")
+):
+    """
+    HTML video player page that plays m3u8 streams using HLS.js.
+    
+    Usage:
+    1. Base64 encode your m3u8 URL
+    2. Open: /api/player?url={base64_encoded_url}&ref={base64_encoded_referer}
+    
+    This provides a web-based video player instead of downloading the m3u8 file.
+    """
+    # Build the proxy URL
+    forwarded_proto = request.headers.get('x-forwarded-proto', request.url.scheme)
+    forwarded_host = request.headers.get('x-forwarded-host', request.url.netloc)
+    api_base_url = f"{forwarded_proto}://{forwarded_host}"
+    
+    proxy_url = f"{api_base_url}/api/proxy/m3u8?url={url}"
+    if ref:
+        proxy_url += f"&ref={ref}"
+    
+    # Decode URL for display
+    try:
+        decoded_url = base64.b64decode(url).decode('utf-8')
+    except:
+        decoded_url = url
+    
+    html_content = f'''
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>HiAnime Stream Player</title>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <style>
+        * {{
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }}
+        body {{
+            background: #0f0f0f;
+            color: #fff;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+            min-height: 100vh;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            padding: 20px;
+        }}
+        h1 {{
+            margin-bottom: 20px;
+            color: #ff6b9d;
+        }}
+        .player-container {{
+            width: 100%;
+            max-width: 1200px;
+            background: #1a1a1a;
+            border-radius: 12px;
+            overflow: hidden;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+        }}
+        video {{
+            width: 100%;
+            max-height: 80vh;
+            background: #000;
+        }}
+        .controls {{
+            padding: 15px 20px;
+            background: #1a1a1a;
+            border-top: 1px solid #333;
+        }}
+        .info {{
+            margin-top: 20px;
+            padding: 15px 20px;
+            background: #1a1a1a;
+            border-radius: 8px;
+            width: 100%;
+            max-width: 1200px;
+        }}
+        .info p {{
+            color: #888;
+            font-size: 12px;
+            word-break: break-all;
+        }}
+        .status {{
+            padding: 10px;
+            text-align: center;
+            color: #888;
+        }}
+        .error {{
+            color: #ff4444;
+            padding: 20px;
+            text-align: center;
+        }}
+    </style>
+</head>
+<body>
+    <h1>🎬 HiAnime Stream Player</h1>
+    
+    <div class="player-container">
+        <video id="video" controls autoplay></video>
+        <div id="status" class="status">Loading stream...</div>
+    </div>
+    
+    <div class="info">
+        <p><strong>Stream URL:</strong> {decoded_url[:100]}...</p>
+    </div>
+
+    <script>
+        const video = document.getElementById('video');
+        const status = document.getElementById('status');
+        const streamUrl = "{proxy_url}";
+        
+        if (Hls.isSupported()) {{
+            const hls = new Hls({{
+                debug: false,
+                enableWorker: true,
+                lowLatencyMode: true,
+                backBufferLength: 90
+            }});
+            
+            hls.loadSource(streamUrl);
+            hls.attachMedia(video);
+            
+            hls.on(Hls.Events.MANIFEST_PARSED, function(event, data) {{
+                status.textContent = 'Stream ready - ' + data.levels.length + ' quality levels available';
+                video.play().catch(e => {{
+                    status.textContent = 'Click to play';
+                }});
+            }});
+            
+            hls.on(Hls.Events.ERROR, function(event, data) {{
+                if (data.fatal) {{
+                    status.innerHTML = '<span class="error">Error: ' + data.type + ' - ' + data.details + '</span>';
+                    switch(data.type) {{
+                        case Hls.ErrorTypes.NETWORK_ERROR:
+                            console.log('Network error, trying to recover...');
+                            hls.startLoad();
+                            break;
+                        case Hls.ErrorTypes.MEDIA_ERROR:
+                            console.log('Media error, trying to recover...');
+                            hls.recoverMediaError();
+                            break;
+                        default:
+                            hls.destroy();
+                            break;
+                    }}
+                }}
+            }});
+            
+            hls.on(Hls.Events.LEVEL_SWITCHED, function(event, data) {{
+                const level = hls.levels[data.level];
+                if (level) {{
+                    status.textContent = 'Playing: ' + level.width + 'x' + level.height + ' @ ' + Math.round(level.bitrate/1000) + 'kbps';
+                }}
+            }});
+        }} else if (video.canPlayType('application/vnd.apple.mpegurl')) {{
+            // Safari native HLS support
+            video.src = streamUrl;
+            video.addEventListener('loadedmetadata', function() {{
+                status.textContent = 'Stream ready (native HLS)';
+                video.play();
+            }});
+        }} else {{
+            status.innerHTML = '<span class="error">Your browser does not support HLS playback</span>';
+        }}
+    </script>
+</body>
+</html>
+'''
+    return HTMLResponse(content=html_content)
+
 
 @app.get("/api/combined/search", tags=["Combined"])
 async def combined_search(
