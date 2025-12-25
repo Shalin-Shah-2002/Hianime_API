@@ -1564,6 +1564,42 @@ async def get_download_links(
 # Store for tracking download progress
 download_progress = {}
 
+
+@app.get("/api/download/mp4/check", tags=["Download"])
+async def check_ffmpeg():
+    """
+    Check if FFmpeg is available for MP4 conversion
+    
+    FFmpeg is required for converting HLS streams to MP4.
+    """
+    try:
+        result = subprocess.run(
+            ["ffmpeg", "-version"],
+            capture_output=True,
+            text=True,
+            timeout=5
+        )
+        if result.returncode == 0:
+            version_line = result.stdout.split('\n')[0]
+            return {
+                "success": True,
+                "ffmpeg_available": True,
+                "version": version_line,
+                "message": "FFmpeg is available. MP4 downloads will work!"
+            }
+    except FileNotFoundError:
+        pass
+    except Exception as e:
+        pass
+    
+    return {
+        "success": True,
+        "ffmpeg_available": False,
+        "message": "FFmpeg not found. Install it for MP4 conversion: brew install ffmpeg (macOS) or apt install ffmpeg (Linux)",
+        "alternative": "Without FFmpeg, videos will be downloaded as .ts files which can be played in VLC"
+    }
+
+
 @app.get("/api/download/mp4/{episode_id}", tags=["Download"])
 async def download_video_mp4(
     request: Request,
@@ -1789,41 +1825,6 @@ async def get_download_status(episode_id: str):
         "status": "not_started",
         "progress": 0,
         "message": "Download not started or already completed"
-    }
-
-
-@app.get("/api/download/mp4/check", tags=["Download"])
-async def check_ffmpeg():
-    """
-    Check if FFmpeg is available for MP4 conversion
-    
-    FFmpeg is required for converting HLS streams to MP4.
-    """
-    try:
-        result = subprocess.run(
-            ["ffmpeg", "-version"],
-            capture_output=True,
-            text=True,
-            timeout=5
-        )
-        if result.returncode == 0:
-            version_line = result.stdout.split('\n')[0]
-            return {
-                "success": True,
-                "ffmpeg_available": True,
-                "version": version_line,
-                "message": "FFmpeg is available. MP4 downloads will work!"
-            }
-    except FileNotFoundError:
-        pass
-    except Exception as e:
-        pass
-    
-    return {
-        "success": True,
-        "ffmpeg_available": False,
-        "message": "FFmpeg not found. Install it for MP4 conversion: brew install ffmpeg (macOS) or apt install ffmpeg (Linux)",
-        "alternative": "Without FFmpeg, videos will be downloaded as .ts files which can be played in VLC"
     }
 
 

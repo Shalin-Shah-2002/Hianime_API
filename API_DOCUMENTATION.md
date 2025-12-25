@@ -445,6 +445,135 @@ Future<void> downloadWithProxy(String episodeId) async {
 }
 ```
 
+---
+
+### 🧪 Postman Testing Guide
+
+Follow these steps to test the download endpoints in Postman:
+
+#### Step 1: Check FFmpeg Status
+```
+Method: GET
+URL: http://localhost:8000/api/download/mp4/check
+```
+**Expected Response:**
+```json
+{
+  "success": true,
+  "ffmpeg_available": true,
+  "version": "ffmpeg version 8.0.1 ...",
+  "message": "FFmpeg is available. MP4 downloads will work!"
+}
+```
+
+#### Step 2: Search for Anime
+```
+Method: GET
+URL: http://localhost:8000/api/search?keyword=naruto&page=1
+```
+**Note:** Get the anime `slug` from the response (e.g., `road-of-naruto-18220`)
+
+#### Step 3: Get Episode List
+```
+Method: GET
+URL: http://localhost:8000/api/episodes/{slug}
+Example: http://localhost:8000/api/episodes/road-of-naruto-18220
+```
+**Note:** Get the episode `id` from the response (e.g., `94736`)
+
+#### Step 4: Download MP4 Video
+```
+Method: GET
+URL: http://localhost:8000/api/download/mp4/{episode_id}
+Example: http://localhost:8000/api/download/mp4/94736
+
+Query Parameters (optional):
+- server_type: sub (default) or dub
+- server_index: 0 (default)
+- filename: custom_name (without .mp4)
+```
+
+**Postman Settings for Download:**
+1. Click "Send and Download" button (not just "Send")
+2. Or go to Settings → General → "Send file downloads to" → Set a folder
+3. Increase timeout: Settings → General → Request Timeout → Set to 300000ms (5 minutes)
+
+**⚠️ Important Notes:**
+- Download may take 1-5 minutes depending on video length
+- The video is being processed (HLS segments → MP4) in real-time
+- File size is unknown until download completes
+
+#### Step 5: Get Download Links (Alternative)
+```
+Method: GET
+URL: http://localhost:8000/api/download/{episode_id}
+Example: http://localhost:8000/api/download/94736?server_type=sub
+```
+**Response includes:** Direct URLs, proxy URLs, FFmpeg commands, yt-dlp commands
+
+---
+
+### Postman Collection Import
+
+Create a new Postman collection with these requests:
+
+```json
+{
+  "info": {
+    "name": "HiAnime API - Download Tests",
+    "schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+  },
+  "item": [
+    {
+      "name": "1. Check FFmpeg",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/api/download/mp4/check"
+      }
+    },
+    {
+      "name": "2. Search Anime",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/api/search?keyword=naruto&page=1"
+      }
+    },
+    {
+      "name": "3. Get Episodes",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/api/episodes/road-of-naruto-18220"
+      }
+    },
+    {
+      "name": "4. Download MP4",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/api/download/mp4/94736?server_type=sub"
+      }
+    },
+    {
+      "name": "5. Get Download Links",
+      "request": {
+        "method": "GET",
+        "url": "{{base_url}}/api/download/94736?server_type=sub"
+      }
+    }
+  ],
+  "variable": [
+    {
+      "key": "base_url",
+      "value": "http://localhost:8000"
+    }
+  ]
+}
+```
+
+**Environment Variable:**
+- `base_url`: `http://localhost:8000` (local) or your deployed API URL
+
+---
+
 ### Key Points
 | Endpoint | Headers Needed? | Best For |
 |----------|-----------------|----------|
