@@ -101,9 +101,9 @@ async def root():
     return {
         "status": "online",
         "api": "HiAnime + MAL Scraper API",
-        "version": "2.2.0",
+        "version": "2.3.0",
         "mal_enabled": MAL_ENABLED,
-        "total_endpoints": 29 if MAL_ENABLED else 21,
+        "total_endpoints": 31 if MAL_ENABLED else 23,
         "endpoints": {
             "search": "/api/search?keyword=naruto",
             "filter": "/api/filter?type=tv&status=airing",
@@ -123,6 +123,8 @@ async def root():
             "video_sources": "/api/sources/{episode_id}?server_type=sub",
             "watch_sources": "/api/watch/{anime_slug}?ep={episode_id}&server_type=sub",
             "streaming_links": "/api/stream/{episode_id}?server_type=sub  ⭐ USE THIS FOR FLUTTER!",
+            "download_links": "/api/download/{episode_id}?server_type=sub  📥 GET DOWNLOAD URLS",
+            "download_file": "/api/download/file/{episode_id}  📥 DIRECT FILE STREAM",
             "extract_stream": "/api/extract-stream?url={embed_url}",
             "mal_search": "/api/mal/search?query=naruto",
             "mal_details": "/api/mal/anime/{mal_id}",
@@ -1411,6 +1413,228 @@ async def combined_search(
         results["sources"]["myanimelist"]["error"] = "MAL API not configured"
     
     return results
+
+
+# =============================================================================
+# DOWNLOAD ENDPOINT (Get downloadable video links)
+# =============================================================================
+
+@app.get("/api/download/{episode_id}", tags=["Download"])
+async def get_download_links(
+    request: Request,
+    episode_id: str,
+    server_type: str = Query("sub", description="Server type: sub, dub, or all"),
+    quality: str = Query("auto", description="Preferred quality: auto, 1080p, 720p, 480p, 360p")
+):
+    """
+    📥 Get downloadable video links for an episode
+    
+    Returns video URLs optimized for downloading. Includes:
+    - Direct stream URLs with required headers
+    - Proxy URLs that work without headers (for simpler downloaders)
+    - Download commands for ffmpeg/yt-dlp
+    
+    **Parameters:**
+    - **episode_id**: Episode ID from the URL (e.g., "2142" from ?ep=2142)
+    - **server_type**: "sub" (default), "dub", or "all"
+    - **quality**: Preferred quality (auto selects best available)
+    
+    **Response includes:**
+    - `download_options`: List of downloadable streams
+    - Each option has `direct_url`, `proxy_url`, and `download_commands`
+    
+    **Usage:**
+    1. Use `proxy_url` for simple HTTP downloads (no headers needed)
+    2. Use `direct_url` with provided `headers` for advanced tools
+    3. Use `download_commands.ffmpeg` to download with ffmpeg
+    4. Use `download_commands.yt_dlp` to download with yt-dlp
+    """
+    try:
+        # Get streaming links first
+        result = scraper.get_streaming_links(episode_id, server_type)
+        
+        if not result.get('streams'):
+            return {
+                "success": False,
+                "error": "No streams found for this episode",
+                "episode_id": episode_id
+            }
+        
+        # Get base URL for proxy
+        forwarded_proto = request.headers.get('x-forwarded-proto', request.url.scheme)
+        forwarded_host = request.headers.get('x-forwarded-host', request.url.netloc)
+        api_base_url = f"{forwarded_proto}://{forwarded_host}"
+        
+        download_options = []
+        
+        for stream in result['streams']:
+            server_name = stream.get('server_name', 'Unknown')
+            server_type_str = stream.get('server_type', 'sub')
+            
+            for source in stream.get('sources', []):
+                direct_url = source.get('file', '')
+                if not direct_url:
+                    continue
+                
+                source_headers = source.get('headers', stream.get('headers', {}))
+                referer = source_headers.get('Referer', 'https://megacloud.blog/')
+                user_agent = source_headers.get('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36')
+                
+                # Create proxy URL (no headers needed for this)
+                encoded_url = base64.b64encode(direct_url.encode()).decode()
+                encoded_referer = base64.b64encode(referer.encode()).decode()
+                proxy_url = f"{api_base_url}/api/proxy/m3u8?url={encoded_url}&ref={encoded_referer}"
+                
+                # Generate download commands
+                # FFmpeg command for HLS streams
+                ffmpeg_cmd = f'ffmpeg -headers "Referer: {referer}\\r\\nUser-Agent: {user_agent}\\r\\n" -i "{direct_url}" -c copy -bsf:a aac_adtstoasc "output.mp4"'
+                
+                # yt-dlp command (works with most streams)
+                ytdlp_cmd = f'yt-dlp --referer "{referer}" --user-agent "{user_agent}" -o "%(title)s.%(ext)s" "{direct_url}"'
+                
+                # aria2c for direct downloads (if MP4)
+                aria2_cmd = f'aria2c --referer="{referer}" --user-agent="{user_agent}" -o "output.mp4" "{direct_url}"'
+                
+                download_option = {
+                    "server": f"{server_name} ({server_type_str.upper()})",
+                    "quality": source.get('quality', 'auto'),
+                    "type": source.get('type', 'hls'),
+                    "is_m3u8": source.get('isM3U8', True),
+                    "direct_url": direct_url,
+                    "proxy_url": proxy_url,
+                    "headers": source_headers,
+                    "download_commands": {
+                        "ffmpeg": ffmpeg_cmd,
+                        "yt_dlp": ytdlp_cmd,
+                        "aria2c": aria2_cmd if not source.get('isM3U8', True) else None
+                    },
+                    "notes": {
+                        "proxy_url": "Use this URL directly - no headers needed, works in browsers and simple downloaders",
+                        "direct_url": "Requires headers to be sent with the request",
+                        "ffmpeg": "Best for HLS (.m3u8) streams - converts to MP4",
+                        "yt_dlp": "Universal downloader - handles most video formats automatically"
+                    }
+                }
+                
+                # Add subtitles info if available
+                if stream.get('subtitles'):
+                    download_option['subtitles'] = stream['subtitles']
+                
+                download_options.append(download_option)
+        
+        # Filter by quality if specified
+        if quality != "auto":
+            filtered = [opt for opt in download_options if quality in opt.get('quality', '').lower()]
+            if filtered:
+                download_options = filtered
+        
+        return {
+            "success": True,
+            "episode_id": episode_id,
+            "server_type": server_type,
+            "total_options": len(download_options),
+            "download_options": download_options,
+            "instructions": {
+                "browser": "Copy the proxy_url and paste in browser to download",
+                "mobile_app": "Use proxy_url with any HTTP download library",
+                "desktop": "Use ffmpeg or yt-dlp commands for best results",
+                "flutter": "Use dio or http package with proxy_url (no headers needed)"
+            },
+            "recommended": {
+                "method": "proxy_url",
+                "reason": "Works without additional configuration - headers are handled server-side"
+            }
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/download/file/{episode_id}", tags=["Download"])
+async def download_video_file(
+    request: Request,
+    episode_id: str,
+    server_type: str = Query("sub", description="Server type: sub or dub"),
+    server_index: int = Query(0, description="Server index (0 = first/best)")
+):
+    """
+    📥 Direct video file streaming endpoint (for download managers)
+    
+    This endpoint streams the video file through the server, making it 
+    downloadable without any special headers or tools.
+    
+    **Perfect for:**
+    - Browser "Save As" download
+    - Mobile app download managers
+    - Any HTTP client without header support
+    
+    **Parameters:**
+    - **episode_id**: Episode ID
+    - **server_type**: "sub" or "dub"
+    - **server_index**: Which server to use (0 = first available)
+    
+    **Note:** This streams through our server, so download speed depends on 
+    server bandwidth. For large files, consider using the /api/download/{episode_id}
+    endpoint and downloading directly from CDN with proper headers.
+    """
+    try:
+        result = scraper.get_streaming_links(episode_id, server_type)
+        
+        if not result.get('streams'):
+            raise HTTPException(status_code=404, detail="No streams found")
+        
+        # Get the requested server
+        streams = result['streams']
+        if server_index >= len(streams):
+            server_index = 0
+        
+        stream = streams[server_index]
+        sources = stream.get('sources', [])
+        
+        if not sources:
+            raise HTTPException(status_code=404, detail="No sources in stream")
+        
+        # Get the first source
+        source = sources[0]
+        direct_url = source.get('file', '')
+        
+        if not direct_url:
+            raise HTTPException(status_code=404, detail="No video URL found")
+        
+        # Get headers
+        source_headers = source.get('headers', stream.get('headers', {}))
+        referer = source_headers.get('Referer', 'https://megacloud.blog/')
+        
+        headers = {
+            "Referer": referer,
+            "Origin": referer.rstrip('/'),
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        }
+        
+        # Stream the content
+        async def stream_video():
+            async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
+                async with client.stream("GET", direct_url, headers=headers) as response:
+                    async for chunk in response.aiter_bytes(chunk_size=65536):
+                        yield chunk
+        
+        # Generate filename
+        server_name = stream.get('server_name', 'video')
+        filename = f"episode_{episode_id}_{server_name}_{server_type}.m3u8"
+        
+        return StreamingResponse(
+            stream_video(),
+            media_type="application/vnd.apple.mpegurl",
+            headers={
+                "Content-Disposition": f'attachment; filename="{filename}"',
+                "Access-Control-Allow-Origin": "*",
+            }
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 # =============================================================================
