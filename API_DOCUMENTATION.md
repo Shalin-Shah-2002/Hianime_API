@@ -5,7 +5,7 @@
 The HiAnime Scraper API provides a comprehensive RESTful interface for accessing anime data from HiAnime.to and MyAnimeList (MAL). It supports searching, browsing, filtering, retrieving details, episodes, video sources, **downloading videos**, and integrating with MAL for both public and user-authenticated endpoints.
 
 - **Base URL:** `/`
-- **Version:** 2.3.0
+- **Version:** 2.3.1
 - **Docs:** `/docs` (Swagger UI), `/redoc` (ReDoc)
 
 ---
@@ -248,7 +248,60 @@ These endpoints allow you to retrieve video streaming sources for episodes.
 
 These endpoints provide downloadable video links for episodes. Perfect for mobile apps, download managers, or any client that needs to download videos.
 
-### Get Download Links
+### Development Prompt (How This Feature Was Built)
+```
+Prompt used to create this download feature:
+
+"downloads to the user device .mp4 file give that endpoint proper one"
+
+This prompted the creation of an endpoint that:
+1. Fetches the M3U8 playlist from streaming servers
+2. Downloads ALL HLS video segments
+3. Uses FFmpeg to combine segments into a single MP4 file
+4. Streams the final MP4 to the user's device
+```
+
+---
+
+### 🎬 Download as MP4 (RECOMMENDED)
+- **GET /api/download/mp4/{episode_id}**
+- Downloads the actual video as an MP4 file directly to your device.
+- **Parameters:**
+  - `episode_id` (required): Episode ID from the watch URL (e.g., "147365")
+  - `server_type` (optional): "sub" (default) or "dub"
+  - `server_index` (optional): Which server to use (0 = first/best)
+  - `filename` (optional): Custom filename (without .mp4 extension)
+- **Response:** Binary MP4 video file with `Content-Disposition: attachment` header
+- **⚠️ Note:** Download may take 1-5 minutes depending on video length!
+
+#### Example Request:
+```
+GET /api/download/mp4/147365?server_type=sub&filename=NarutoEp1
+```
+
+#### How It Works:
+1. Fetches M3U8 playlist from streaming server
+2. Downloads all HLS video segments (.ts files)
+3. Uses FFmpeg to combine into single MP4
+4. Streams the MP4 file to your device
+
+---
+
+### ✅ Check FFmpeg Status
+- **GET /api/download/mp4/check**
+- Verify if FFmpeg is installed and working on the server.
+- **Response Example:**
+```json
+{
+  "ffmpeg_available": true,
+  "ffmpeg_path": "/opt/homebrew/bin/ffmpeg",
+  "message": "FFmpeg is available. MP4 downloads will work!"
+}
+```
+
+---
+
+### 📥 Get Download Links (Advanced)
 - **GET /api/download/{episode_id}**
 - Get downloadable video URLs with multiple server options.
 - **Parameters:**
@@ -308,46 +361,70 @@ These endpoints provide downloadable video links for episodes. Perfect for mobil
 }
 ```
 
-### Direct File Stream
-- **GET /api/download/file/{episode_id}**
-- Stream video file directly through the server (for download managers).
-- **Parameters:**
-  - `episode_id` (required): Episode ID
-  - `server_type` (optional): "sub" or "dub"
-  - `server_index` (optional): Which server to use (0 = first/best)
-- **Response:** Binary video stream with `Content-Disposition: attachment` header
-
 ### Usage Examples
 
-#### Browser Download
+#### 🎬 Download MP4 in Browser
 ```
-Copy proxy_url from response and paste in browser address bar
-```
-
-#### cURL Download
-```bash
-curl -L "http://your-api.com/api/proxy/m3u8?url=..." -o video.m3u8
+Just navigate to: http://your-api.com/api/download/mp4/{episode_id}
+The MP4 file will download automatically!
 ```
 
-#### FFmpeg Download (Best Quality)
+#### 🎬 Download MP4 with cURL
 ```bash
+curl -L "http://your-api.com/api/download/mp4/147365?server_type=sub" -o episode.mp4
+```
+
+#### 🎬 Flutter MP4 Download
+```dart
+import 'package:dio/dio.dart';
+
+Future<void> downloadEpisodeMp4(String episodeId) async {
+  final dio = Dio();
+  
+  // Direct MP4 download - simple!
+  await dio.download(
+    'https://your-api.com/api/download/mp4/$episodeId',
+    '/path/to/episode.mp4',
+    queryParameters: {'server_type': 'sub'},
+    onReceiveProgress: (received, total) {
+      if (total != -1) {
+        print('${(received / total * 100).toStringAsFixed(0)}%');
+      }
+    },
+  );
+}
+```
+
+---
+
+#### Advanced: Using Download Links with FFmpeg
+```bash
+# First get the download links
+curl "http://your-api.com/api/download/147365?server_type=sub"
+
+# Then use FFmpeg with the direct_url and headers
 ffmpeg -headers "Referer: https://megacloud.blog/\r\n" \
   -i "https://cdn.example.com/master.m3u8" \
   -c copy -bsf:a aac_adtstoasc "output.mp4"
 ```
 
-#### yt-dlp Download
+#### Advanced: Using proxy_url (No Headers Needed)
+```bash
+curl -L "http://your-api.com/api/proxy/m3u8?url=..." -o video.m3u8
+```
+
+#### Advanced: yt-dlp Download
 ```bash
 yt-dlp --referer "https://megacloud.blog/" \
   -o "video.%(ext)s" \
   "https://cdn.example.com/master.m3u8"
 ```
 
-#### Flutter/Dart Download
+#### Advanced: Flutter with Download Links
 ```dart
 import 'package:dio/dio.dart';
 
-Future<void> downloadEpisode(String episodeId) async {
+Future<void> downloadWithProxy(String episodeId) async {
   final dio = Dio();
   
   // 1. Get download links
@@ -368,22 +445,14 @@ Future<void> downloadEpisode(String episodeId) async {
 }
 ```
 
-#### Flutter Video Playback (No Download)
-```dart
-import 'package:media_kit/media_kit.dart';
-
-// Just use proxy_url directly - works without headers!
-final player = Player();
-await player.open(Media(proxyUrl));
-```
-
 ### Key Points
-| URL Type | Headers Needed? | Best For |
+| Endpoint | Headers Needed? | Best For |
 |----------|-----------------|----------|
+| `/api/download/mp4/{id}` | ❌ No | **Easiest!** Direct MP4 download to device |
 | `proxy_url` | ❌ No | Flutter apps, browsers, simple downloaders |
 | `direct_url` | ✅ Yes | Advanced tools like ffmpeg, yt-dlp |
 
-**Recommendation:** Use `proxy_url` for the easiest integration - all headers are handled server-side!
+**Recommendation:** Use `/api/download/mp4/{episode_id}` for the easiest integration - just call it and get an MP4 file!
 
 ---
 
