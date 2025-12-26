@@ -20,6 +20,7 @@ import tempfile
 import os
 import subprocess
 import shutil
+import time
 from urllib.parse import urljoin
 
 from hianime_scraper import HiAnimeScraper, SearchResult, AnimeInfo, Episode, VideoServer, VideoSource
@@ -1569,8 +1570,6 @@ download_progress = {}
 async def check_ffmpeg():
     """
     Check if FFmpeg is available for MP4 conversion
-    
-    FFmpeg is required for converting HLS streams to MP4.
     """
     try:
         result = subprocess.run(
@@ -1587,16 +1586,13 @@ async def check_ffmpeg():
                 "version": version_line,
                 "message": "FFmpeg is available. MP4 downloads will work!"
             }
-    except FileNotFoundError:
-        pass
-    except Exception as e:
+    except:
         pass
     
     return {
         "success": True,
         "ffmpeg_available": False,
-        "message": "FFmpeg not found. Install it for MP4 conversion: brew install ffmpeg (macOS) or apt install ffmpeg (Linux)",
-        "alternative": "Without FFmpeg, videos will be downloaded as .ts files which can be played in VLC"
+        "message": "FFmpeg not found."
     }
 
 
@@ -1607,39 +1603,22 @@ async def download_video_mp4(
     episode_id: str,
     server_type: str = Query("sub", description="Server type: sub or dub"),
     server_index: int = Query(0, description="Server index (0 = first/best)"),
-    filename: Optional[str] = Query(None, description="Custom filename (without extension)")
+    filename: Optional[str] = Query(None, description="Custom filename (without extension)"),
+    quality: str = Query("best", description="Quality: best, 1080, 720, 480, 360")
 ):
     """
-    📥 Download video as MP4 file (REAL DOWNLOAD!)
+    📥 Download video as MP4 - FAST PARALLEL SEGMENT DOWNLOAD!
     
-    This endpoint:
-    1. Fetches the M3U8 playlist
-    2. Downloads ALL video segments
-    3. Combines them into a single MP4 file
-    4. Streams the MP4 to your device
-    
-    **⚠️ Note:** This may take 1-5 minutes depending on video length!
-    
-    **Parameters:**
-    - **episode_id**: Episode ID from the URL
-    - **server_type**: "sub" or "dub"
-    - **server_index**: Which server to use (0 = first)
-    - **filename**: Optional custom filename
-    
-    **Works with:**
-    - Browser download
-    - Mobile apps
-    - Any HTTP client
-    
-    **Tip:** For faster downloads on desktop, use the ffmpeg command from 
-    `/api/download/{episode_id}` endpoint.
+    Downloads segments in parallel (100 concurrent) and merges them into MP4.
+    Handles encrypted/protected HLS streams with .jpg segments.
     """
+    temp_dir = None
     try:
         # Get streaming links
         result = scraper.get_streaming_links(episode_id, server_type)
         
         if not result.get('streams'):
-            raise HTTPException(status_code=404, detail="No streams found for this episode")
+            raise HTTPException(status_code=404, detail="No streams found")
         
         streams = result['streams']
         if server_index >= len(streams):
@@ -1649,167 +1628,276 @@ async def download_video_mp4(
         sources = stream.get('sources', [])
         
         if not sources:
-            raise HTTPException(status_code=404, detail="No video sources found")
+            raise HTTPException(status_code=404, detail="No sources found")
         
         source = sources[0]
         m3u8_url = source.get('file', '')
         
         if not m3u8_url:
-            raise HTTPException(status_code=404, detail="No M3U8 URL found")
+            raise HTTPException(status_code=404, detail="No M3U8 URL")
         
-        # Get headers for requests
         source_headers = source.get('headers', stream.get('headers', {}))
         referer = source_headers.get('Referer', 'https://megacloud.blog/')
         
-        headers = {
-            "Referer": referer,
-            "Origin": referer.rstrip('/'),
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-            "Accept": "*/*",
-            "Accept-Encoding": "identity",
-        }
-        
-        # Generate filename
-        server_name = stream.get('server_name', 'video')
         if filename:
             output_filename = f"{filename}.mp4"
         else:
             output_filename = f"episode_{episode_id}_{server_type}.mp4"
         
-        # Create temp directory for this download
-        temp_dir = tempfile.mkdtemp(prefix=f"anime_dl_{episode_id}_")
+        temp_dir = tempfile.mkdtemp(prefix=f"dl_{episode_id}_")
+        output_file = os.path.join(temp_dir, "output.mp4")
         
-        async def download_and_stream_mp4():
-            """Download segments and yield MP4 data"""
-            try:
-                async with httpx.AsyncClient(timeout=60.0, follow_redirects=True) as client:
-                    # Step 1: Fetch M3U8 playlist
-                    m3u8_response = await client.get(m3u8_url, headers=headers)
-                    m3u8_content = m3u8_response.text
-                    
-                    # Step 2: Parse segment URLs from M3U8
-                    segments = []
-                    base_url = m3u8_url.rsplit('/', 1)[0] + '/'
-                    
-                    for line in m3u8_content.split('\n'):
-                        line = line.strip()
-                        if line and not line.startswith('#'):
-                            # This is a segment URL
-                            if line.startswith('http'):
-                                segment_url = line
-                            else:
-                                segment_url = urljoin(base_url, line)
-                            segments.append(segment_url)
-                    
-                    if not segments:
-                        raise Exception("No video segments found in playlist")
-                    
-                    # Step 3: Download all segments to temp files
-                    segment_files = []
-                    total_segments = len(segments)
-                    
-                    # Download segments in batches for efficiency
-                    batch_size = 10
-                    for batch_start in range(0, total_segments, batch_size):
-                        batch_end = min(batch_start + batch_size, total_segments)
-                        batch = segments[batch_start:batch_end]
-                        
-                        # Download batch concurrently
-                        tasks = []
-                        for i, seg_url in enumerate(batch):
-                            seg_index = batch_start + i
-                            seg_file = os.path.join(temp_dir, f"seg_{seg_index:05d}.ts")
-                            tasks.append(download_segment(client, seg_url, seg_file, headers))
-                        
-                        results = await asyncio.gather(*tasks, return_exceptions=True)
-                        
-                        for i, result in enumerate(results):
-                            if isinstance(result, Exception):
-                                print(f"Segment {batch_start + i} failed: {result}")
-                            else:
-                                segment_files.append(result)
-                    
-                    if not segment_files:
-                        raise Exception("Failed to download any segments")
-                    
-                    # Step 4: Combine segments using ffmpeg
-                    # Create concat file
-                    concat_file = os.path.join(temp_dir, "concat.txt")
-                    with open(concat_file, 'w') as f:
-                        for seg_file in sorted(segment_files):
-                            f.write(f"file '{seg_file}'\n")
-                    
-                    output_file = os.path.join(temp_dir, "output.mp4")
-                    
-                    # Run ffmpeg to combine and convert to MP4
-                    ffmpeg_cmd = [
-                        "ffmpeg", "-y",
-                        "-f", "concat",
-                        "-safe", "0",
-                        "-i", concat_file,
-                        "-c", "copy",
-                        "-bsf:a", "aac_adtstoasc",
-                        "-movflags", "+faststart",
-                        output_file
-                    ]
-                    
-                    process = await asyncio.create_subprocess_exec(
-                        *ffmpeg_cmd,
-                        stdout=asyncio.subprocess.PIPE,
-                        stderr=asyncio.subprocess.PIPE
-                    )
-                    stdout, stderr = await process.communicate()
-                    
-                    if process.returncode != 0:
-                        # Try alternative: just concatenate TS files
-                        output_file = os.path.join(temp_dir, "output.ts")
-                        with open(output_file, 'wb') as outfile:
-                            for seg_file in sorted(segment_files):
-                                with open(seg_file, 'rb') as infile:
-                                    outfile.write(infile.read())
-                    
-                    # Step 5: Stream the output file
-                    if os.path.exists(output_file):
-                        with open(output_file, 'rb') as f:
-                            while chunk := f.read(65536):
-                                yield chunk
-                    
-            except Exception as e:
-                print(f"Download error: {e}")
-                raise
-            finally:
-                # Cleanup temp directory
-                try:
-                    shutil.rmtree(temp_dir, ignore_errors=True)
-                except:
-                    pass
+        # ============================================
+        # STEP 1: Download all segments in parallel
+        # ============================================
+        start_time = time.time()
+        print(f"\n{'='*60}")
+        print(f"🎬 FAST DOWNLOAD: Episode {episode_id}")
+        print(f"{'='*60}")
         
-        async def download_segment(client, url, filepath, headers):
-            """Download a single segment"""
+        headers = {
+            "Referer": referer,
+            "Origin": referer.rstrip('/'),
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+        }
+        
+        connector = httpx.Limits(max_keepalive_connections=100, max_connections=100)
+        
+        async with httpx.AsyncClient(
+            timeout=httpx.Timeout(60.0, connect=10.0),
+            follow_redirects=True,
+            limits=connector
+        ) as client:
+            
+            # Get M3U8 playlist
+            print("📋 Fetching playlist...")
+            resp = await client.get(m3u8_url, headers=headers)
+            m3u8_content = resp.text
+            
+            base_url = m3u8_url.rsplit('/', 1)[0] + '/'
+            
+            # Check if master playlist - need to get variant playlist
+            actual_m3u8_url = m3u8_url
+            if '#EXT-X-STREAM-INF' in m3u8_content:
+                print("📋 Found master playlist, selecting quality...")
+                lines = m3u8_content.strip().split('\n')
+                variants = []
+                
+                for i, line in enumerate(lines):
+                    if line.startswith('#EXT-X-STREAM-INF'):
+                        resolution = None
+                        bandwidth = 0
+                        if 'RESOLUTION=' in line:
+                            res_match = line.split('RESOLUTION=')[1].split(',')[0].split('x')
+                            if len(res_match) >= 2:
+                                resolution = int(res_match[1])
+                        if 'BANDWIDTH=' in line:
+                            bw_str = line.split('BANDWIDTH=')[1].split(',')[0]
+                            bandwidth = int(bw_str)
+                        
+                        if i + 1 < len(lines):
+                            url = lines[i + 1].strip()
+                            if not url.startswith('http'):
+                                url = urljoin(base_url, url)
+                            variants.append({
+                                'url': url,
+                                'resolution': resolution,
+                                'bandwidth': bandwidth
+                            })
+                
+                if variants:
+                    variants.sort(key=lambda x: (x['resolution'] or 0, x['bandwidth']), reverse=True)
+                    selected = variants[0]
+                    if quality != "best":
+                        target = int(quality)
+                        for v in variants:
+                            if v['resolution'] and v['resolution'] <= target:
+                                selected = v
+                                break
+                    
+                    actual_m3u8_url = selected['url']
+                    print(f"✅ Selected: {selected['resolution']}p (bandwidth: {selected['bandwidth']})")
+                    
+                    # Fetch the variant playlist
+                    resp = await client.get(actual_m3u8_url, headers=headers)
+                    m3u8_content = resp.text
+                    base_url = actual_m3u8_url.rsplit('/', 1)[0] + '/'
+            
+            # Parse segments from playlist
+            segments = []
+            for line in m3u8_content.split('\n'):
+                line = line.strip()
+                if line and not line.startswith('#'):
+                    if line.startswith('http'):
+                        segments.append(line)
+                    else:
+                        segments.append(urljoin(base_url, line))
+            
+            total = len(segments)
+            print(f"📦 Found {total} segments")
+            
+            if not segments:
+                raise HTTPException(status_code=500, detail="No segments found in playlist")
+            
+            # PARALLEL DOWNLOAD - 100 at a time!
+            downloaded = [0]
+            failed = [0]
+            semaphore = asyncio.Semaphore(100)
+            
+            async def download_one(idx, url):
+                async with semaphore:
+                    path = os.path.join(temp_dir, f"seg_{idx:05d}.ts")
+                    for attempt in range(3):  # Retry up to 3 times
+                        try:
+                            r = await client.get(url, headers=headers)
+                            r.raise_for_status()
+                            content = r.content
+                            if len(content) > 0:
+                                with open(path, 'wb') as f:
+                                    f.write(content)
+                                downloaded[0] += 1
+                                if downloaded[0] % 10 == 0 or downloaded[0] == total:
+                                    pct = int(downloaded[0] * 100 / total)
+                                    print(f"\r⬇️  Downloading: {downloaded[0]}/{total} ({pct}%)", end="", flush=True)
+                                return path
+                        except Exception as e:
+                            if attempt == 2:
+                                failed[0] += 1
+                                return None
+                            await asyncio.sleep(0.5)
+                    return None
+            
+            print(f"⚡ Downloading {total} segments (100 parallel)...")
+            
+            tasks = [download_one(i, url) for i, url in enumerate(segments)]
+            results = await asyncio.gather(*tasks)
+            
+            seg_files = [r for r in results if r]
+            print(f"\n✅ Downloaded: {len(seg_files)}/{total} segments")
+            
+            if len(seg_files) < total * 0.9:
+                raise HTTPException(status_code=500, detail=f"Too many failures: {failed[0]}/{total}")
+        
+        # ============================================
+        # STEP 2: Convert to MP4 with FFmpeg
+        # ============================================
+        print("🔄 Converting to MP4...", flush=True)
+        
+        concat_file = os.path.join(temp_dir, "list.txt")
+        with open(concat_file, 'w') as f:
+            for sf in sorted(seg_files):
+                f.write(f"file '{sf}'\n")
+        
+        print(f"📝 Created concat list: {concat_file}", flush=True)
+        
+        # Try FFmpeg concat first - use subprocess.run for simplicity (sync is ok here)
+        import subprocess
+        ffmpeg_cmd = [
+            "ffmpeg", "-y", "-hide_banner", "-loglevel", "warning",
+            "-f", "concat", "-safe", "0", "-i", concat_file,
+            "-c", "copy", "-bsf:a", "aac_adtstoasc",
+            "-movflags", "+faststart", output_file
+        ]
+        
+        print(f"🚀 Running FFmpeg...", flush=True)
+        proc_result = subprocess.run(ffmpeg_cmd, capture_output=True, timeout=300)
+        stdout = proc_result.stdout
+        stderr = proc_result.stderr
+        print(f"📍 FFmpeg finished with code: {proc_result.returncode}", flush=True)
+        
+        if proc_result.returncode != 0 or not os.path.exists(output_file) or os.path.getsize(output_file) == 0:
+            print(f"⚠️ FFmpeg concat failed (rc={proc_result.returncode}), trying direct merge...", flush=True)
+            if stderr:
+                print(f"FFmpeg stderr: {stderr.decode()[:500]}", flush=True)
+            
+            # Fallback: direct binary concat then remux
+            ts_file = os.path.join(temp_dir, "combined.ts")
+            with open(ts_file, 'wb') as out:
+                for sf in sorted(seg_files):
+                    with open(sf, 'rb') as inp:
+                        out.write(inp.read())
+            
+            print(f"📦 Combined TS size: {os.path.getsize(ts_file)/1024/1024:.1f}MB", flush=True)
+            
+            # Now remux to MP4
+            ffmpeg_cmd2 = [
+                "ffmpeg", "-y", "-hide_banner", "-loglevel", "warning",
+                "-i", ts_file,
+                "-c", "copy", "-bsf:a", "aac_adtstoasc",
+                "-movflags", "+faststart", output_file
+            ]
+            
+            print(f"🚀 Running FFmpeg remux...", flush=True)
+            proc_result2 = subprocess.run(ffmpeg_cmd2, capture_output=True, timeout=300)
+            stdout2 = proc_result2.stdout
+            stderr2 = proc_result2.stderr
+            print(f"📍 FFmpeg remux finished with code: {proc_result2.returncode}", flush=True)
+            
+            if proc_result2.returncode != 0 or not os.path.exists(output_file) or os.path.getsize(output_file) == 0:
+                print(f"⚠️ FFmpeg remux failed (rc={proc_result2.returncode})", flush=True)
+                if stderr2:
+                    print(f"FFmpeg stderr: {stderr2.decode()[:500]}")
+                # Last resort: use TS file directly
+                print("⚠️ Using raw TS file...")
+                output_file = ts_file
+                output_filename = output_filename.replace('.mp4', '.ts')
+        
+        if not os.path.exists(output_file) or os.path.getsize(output_file) == 0:
+            raise HTTPException(status_code=500, detail="Failed to create output file")
+        
+        file_size = os.path.getsize(output_file)
+        elapsed = time.time() - start_time
+        
+        print(f"✅ Ready! Size: {file_size/1024/1024:.1f}MB, Time: {elapsed:.1f}s")
+        print(f"📤 Streaming to client...")
+        
+        # ============================================
+        # STEP 3: Stream file to client
+        # ============================================
+        final_output_file = output_file  # Capture for closure
+        final_temp_dir = temp_dir  # Capture for cleanup
+        
+        def file_iterator():
+            """Generator to stream file in chunks"""
             try:
-                response = await client.get(url, headers=headers, timeout=30.0)
-                response.raise_for_status()
-                with open(filepath, 'wb') as f:
-                    f.write(response.content)
-                return filepath
+                with open(final_output_file, 'rb') as f:
+                    while chunk := f.read(1048576):  # 1MB chunks
+                        yield chunk
+                print(f"🎉 Download complete! Total time: {time.time() - start_time:.1f}s")
             except Exception as e:
-                print(f"Error downloading {url}: {e}")
-                raise
+                print(f"❌ Error streaming: {e}")
+        
+        # Schedule cleanup after response
+        def cleanup():
+            try:
+                shutil.rmtree(final_temp_dir, ignore_errors=True)
+                print(f"🧹 Cleaned up: {final_temp_dir}")
+            except Exception as e:
+                print(f"⚠️ Cleanup error: {e}")
+        
+        background_tasks.add_task(cleanup)
         
         return StreamingResponse(
-            download_and_stream_mp4(),
-            media_type="video/mp4",
+            file_iterator(),
+            media_type="video/mp4" if output_file.endswith('.mp4') else "video/mp2t",
             headers={
                 "Content-Disposition": f'attachment; filename="{output_filename}"',
+                "Content-Length": str(file_size),
                 "Access-Control-Allow-Origin": "*",
-                "Cache-Control": "no-cache",
             }
         )
         
     except HTTPException:
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
         raise
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Download failed: {str(e)}")
+        if temp_dir:
+            shutil.rmtree(temp_dir, ignore_errors=True)
+        print(f"❌ Error: {e}")
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/download/mp4/status/{episode_id}", tags=["Download"])
