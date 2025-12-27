@@ -114,6 +114,7 @@ async def root():
         "endpoints": {
             "search": "/api/search?keyword=naruto",
             "filter": "/api/filter?type=tv&status=airing",
+            "trending": "/api/trending  🔥 TOP 10 TRENDING FROM HOMEPAGE",
             "popular": "/api/popular",
             "top_airing": "/api/top-airing",
             "recently_updated": "/api/recently-updated",
@@ -176,6 +177,21 @@ async def search_anime(
 # -----------------------------------------------------------------------------
 # BROWSE ENDPOINTS
 # -----------------------------------------------------------------------------
+
+@app.get("/api/trending", response_model=AnimeSearchResponse, tags=["Browse"])
+async def get_trending():
+    """Get trending anime from the homepage (Top 10)"""
+    try:
+        results = scraper.get_trending()
+        return {
+            "success": True,
+            "count": len(results),
+            "page": 1,
+            "data": serialize_results(results)
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 @app.get("/api/popular", response_model=AnimeSearchResponse, tags=["Browse"])
 async def get_popular(

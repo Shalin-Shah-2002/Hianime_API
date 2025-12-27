@@ -459,6 +459,75 @@ class HiAnimeScraper:
     # BROWSE METHODS
     # =========================================================================
     
+    def get_trending(self) -> List[SearchResult]:
+        """
+        Get trending anime from the homepage sidebar.
+        Returns top 10 trending anime with their rank.
+        """
+        url = f"{self.base_url}/home"
+        logger.info("Fetching trending anime from homepage")
+        soup = self._get_soup(url)
+        
+        results = []
+        # The trending section is in the sidebar with id 'trending-home'
+        trending_section = soup.select_one('#trending-home')
+        if not trending_section:
+            # Fallback: try to find trending items by class
+            trending_section = soup.select_one('.trending-block')
+        
+        if trending_section:
+            trending_items = trending_section.select('.swiper-slide .item')
+            if not trending_items:
+                trending_items = trending_section.select('.item')
+            
+            for idx, item in enumerate(trending_items, 1):
+                try:
+                    # Get the link and title
+                    link_elem = item.select_one('a.film-poster, a')
+                    if not link_elem:
+                        continue
+                    
+                    href = link_elem.get('href', '')
+                    anime_url = urljoin(self.base_url, href)
+                    anime_id = ParserUtils.extract_anime_id(href)
+                    slug = ParserUtils.extract_slug(href)
+                    
+                    # Get title
+                    title_elem = item.select_one('.film-name a, .number .film-title')
+                    if not title_elem:
+                        title_elem = item.select_one('.film-name, .film-title')
+                    title = ParserUtils.clean_text(title_elem.text) if title_elem else ""
+                    
+                    # Get thumbnail
+                    img_elem = item.select_one('img')
+                    thumbnail = None
+                    if img_elem:
+                        thumbnail = img_elem.get('data-src') or img_elem.get('src')
+                    
+                    # Get episode counts
+                    sub_elem = item.select_one('.tick-sub')
+                    dub_elem = item.select_one('.tick-dub')
+                    eps_elem = item.select_one('.tick-eps')
+                    
+                    if title and slug:
+                        results.append(SearchResult(
+                            title=title,
+                            url=anime_url,
+                            id=anime_id,
+                            slug=slug,
+                            thumbnail=thumbnail,
+                            type=None,
+                            duration=None,
+                            episodes_sub=ParserUtils.parse_episode_count(sub_elem.text if sub_elem else ""),
+                            episodes_dub=ParserUtils.parse_episode_count(dub_elem.text if dub_elem else "")
+                        ))
+                except Exception as e:
+                    logger.warning(f"Failed to parse trending item: {e}")
+                    continue
+        
+        logger.info(f"Found {len(results)} trending anime")
+        return results
+    
     def get_most_popular(self, page: int = 1) -> List[SearchResult]:
         """Get most popular anime"""
         url = f"{self.base_url}/most-popular"
