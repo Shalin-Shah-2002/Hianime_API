@@ -19,6 +19,75 @@ A powerful REST API for accessing anime data from HiAnime.to and MyAnimeList, wi
 
 ---
 
+## ⚠️ Important: DNS Configuration (Recommended)
+
+Some ISPs (e.g., Airtel, Jio, etc.) **block anime streaming sites at the DNS level**, which causes stream extraction to fail with "File not found" or connection errors. To avoid this, **use Cloudflare DNS (`1.1.1.1`)** on both your server and client devices.
+
+### macOS
+
+1. Open **System Settings** → **Network**
+2. Select your active connection (Wi-Fi or Ethernet) → click **Details…**
+3. Go to the **DNS** tab
+4. Click **+** and add:
+   ```
+   1.1.1.1
+   1.0.0.1
+   ```
+5. Click **OK** → **Apply**
+
+**Or via Terminal:**
+```bash
+networksetup -setdnsservers Wi-Fi 1.1.1.1 1.0.0.1
+```
+
+### Windows
+
+1. Open **Control Panel** → **Network and Internet** → **Network and Sharing Center**
+2. Click your active connection → **Properties**
+3. Select **Internet Protocol Version 4 (TCP/IPv4)** → **Properties**
+4. Choose **Use the following DNS server addresses**:
+   - Preferred DNS: `1.1.1.1`
+   - Alternate DNS: `1.0.0.1`
+5. Click **OK** → **Close**
+
+**Or via Command Prompt (Admin):**
+```cmd
+netsh interface ip set dns "Wi-Fi" static 1.1.1.1
+netsh interface ip add dns "Wi-Fi" 1.0.0.1 index=2
+```
+
+### iPhone / iPad (iOS)
+
+1. Open **Settings** → **Wi-Fi**
+2. Tap the **(i)** icon next to your connected network
+3. Scroll down and tap **Configure DNS** → select **Manual**
+4. Remove existing entries, then tap **Add Server** and add:
+   ```
+   1.1.1.1
+   1.0.0.1
+   ```
+5. Tap **Save**
+
+**Or install the [1.1.1.1 app](https://apps.apple.com/app/1-1-1-1-faster-internet/id1423538627) for one-tap setup.**
+
+### Android
+
+**Android 9+ (Private DNS — works on all networks including mobile data):**
+
+1. Open **Settings** → **Network & Internet** → **Private DNS**
+2. Select **Private DNS provider hostname**
+3. Enter:
+   ```
+   one.one.one.one
+   ```
+4. Tap **Save**
+
+**Or install the [1.1.1.1 app](https://play.google.com/store/apps/details?id=com.cloudflare.onedotonedotonedotone) for one-tap setup.**
+
+> **Why Cloudflare DNS?** It's fast (lowest latency globally), privacy-focused (no logging), and doesn't block anime/streaming domains unlike many ISP DNS servers.
+
+---
+
 ## 📱 For Flutter/Mobile Developers
 
 **The stream proxy is specifically designed for mobile apps!**
