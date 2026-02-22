@@ -20,12 +20,15 @@ lxml>=4.9.0
 aiohttp>=3.9.0
 asyncio>=3.4.3
 
-# Optional: Browser automation (for JS-rendered content)
-playwright>=1.40.0
-selenium>=4.16.0
+# Optional: Browser automation (for JS-rendered content - currently unused)
+# playwright>=1.40.0
+# selenium>=4.16.0
 
 # Optional: Data processing
 pandas>=2.0.0
+
+# AES decryption (for MegaCloud stream extraction)
+pycryptodome>=3.19.0
 
 # Optional: Proxy management
 fake-useragent>=1.4.0

@@ -1099,93 +1099,110 @@ class HiAnimeScraper:
         except:
             return 'https://megacloud.blog/'
     
+    # Cache for decryption keys (avoid re-fetching every call)
+    _decryption_key_cache = None
+    _decryption_key_cache_time = 0
+    _DECRYPTION_KEY_TTL = 3600  # Re-fetch keys every hour
+
     def extract_stream_url(self, embed_url: str) -> Optional[Dict[str, Any]]:
         """
-        Extract actual streaming URL (.m3u8) from embed URL
-        
-        This method extracts the actual playable video stream URL from
-        embed URLs (like megacloud.blog). The returned URL can be used
-        directly in video players (VLC, Flutter video_player, etc.)
-        
+        Extract actual streaming URL (.m3u8) from an embed URL.
+
+        Uses a pure-HTTP approach (no browser required):
+
+        1. Fetch the embed page HTML with the correct ``Referer`` header.
+        2. Extract the per-request **client key** from the HTML using
+           multiple regex patterns (the server randomly picks one of
+           several obfuscation formats).
+        3. Call the ``getSources`` API with the client key to obtain
+           the streaming manifest and subtitle tracks.
+
         Args:
-            embed_url: The embed URL (e.g., "https://megacloud.blog/embed-2/v3/e-1/xxxxx?k=1")
-            
+            embed_url: The embed URL (e.g., ``https://megacloud.blog/embed-2/v3/e-1/xxxxx?k=1``)
+
         Returns:
             Dictionary containing:
-            - sources: List of {url, quality, isM3U8, headers} objects (headers per source!)
-            - tracks: List of subtitle tracks {url, lang, kind}
-            - intro: Intro skip times {start, end}
-            - outro: Outro skip times {start, end}
-            - headers: Default headers for playback (use source-specific headers when available)
+
+            - sources: List of ``{url, quality, isM3U8, headers}`` objects
+            - tracks: List of subtitle tracks ``{url, lang, kind}``
+            - intro: Intro skip times ``{start, end}``
+            - outro: Outro skip times ``{start, end}``
+            - headers: Default headers for playback
         """
         logger.info(f"Extracting stream from: {embed_url}")
-        
+
         try:
-            # Use external decryption service (similar to consumet.ts)
-            # Properly encode the URL
-            from urllib.parse import quote as url_quote
-            encoded_url = url_quote(embed_url, safe='')
-            api_url = f"https://crawlr.cc/9D7F1B3E8?url={encoded_url}"
-            
-            logger.info(f"Calling extraction API: {api_url[:80]}...")
-            
-            headers = self.client._get_headers()
-            headers['Accept'] = 'application/json'
-            
-            response = self.client.session.get(
-                api_url,
-                headers=headers,
-                timeout=30
+            from urllib.parse import urlparse
+
+            parsed = urlparse(embed_url)
+            base_url = f"{parsed.scheme}://{parsed.netloc}"
+
+            default_user_agent = (
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+                '(KHTML, like Gecko) Chrome/126.0.0.0 Safari/537.36'
             )
-            
-            if response.status_code != 200:
-                logger.error(f"Stream extraction failed with status {response.status_code}")
+
+            # --- Extract client key and call getSources ---
+            data = self._get_sources_via_client_key(embed_url)
+
+            if data is None:
+                logger.error("getSources extraction failed")
                 return None
-            
-            data = response.json()
-            logger.info(f"Extraction API response: sources={bool(data.get('sources'))}, tracks={bool(data.get('tracks'))}")
-            
-            if not data.get('sources'):
-                logger.warning("No sources found in extraction response")
+
+            logger.info(
+                f"getSources response: encrypted={data.get('encrypted')}, "
+                f"has_sources={bool(data.get('sources'))}, "
+                f"has_tracks={bool(data.get('tracks'))}"
+            )
+
+            # --- Resolve sources (may be encrypted) ---
+            raw_sources = data.get('sources')
+            if raw_sources is None:
+                logger.warning("No sources field in getSources response")
                 return None
-            
-            # Get headers from API response or use defaults
-            api_headers = data.get('headers', {})
-            default_user_agent = api_headers.get('User-Agent', headers.get('User-Agent', 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36'))
-            
-            # Format the response
-            result = {
+
+            if isinstance(raw_sources, str):
+                # Encrypted — decrypt locally
+                logger.info("Sources are encrypted, decrypting locally…")
+                raw_sources = self._decrypt_sources(raw_sources)
+                if raw_sources is None:
+                    logger.error("Local decryption failed")
+                    return None
+
+            if not raw_sources:
+                logger.warning("Sources list is empty after decryption")
+                return None
+
+            # --- Build result ---
+            result: Dict[str, Any] = {
                 "sources": [],
                 "tracks": [],
                 "intro": data.get('intro'),
                 "outro": data.get('outro'),
                 "headers": {
-                    "Referer": api_headers.get('Referer', embed_url),
-                    "User-Agent": default_user_agent
-                }
+                    "Referer": f"{base_url}/",
+                    "User-Agent": default_user_agent,
+                },
             }
-            
-            # Process sources - IMPORTANT: Add per-source headers!
-            for src in data.get('sources', []):
+
+            # Process sources — add per-source headers
+            for src in raw_sources:
                 source_url = src.get('url', src.get('file', ''))
                 if source_url:
-                    # Get the correct referer for THIS specific source URL
                     source_referer = self._get_referer_for_cdn(source_url, embed_url)
-                    
                     result["sources"].append({
                         "url": source_url,
                         "quality": src.get('quality', 'auto'),
                         "isM3U8": '.m3u8' in source_url,
-                        # Include per-source headers so each URL works independently
                         "headers": {
                             "Referer": source_referer,
                             "Origin": source_referer.rstrip('/'),
-                            "User-Agent": default_user_agent
-                        }
+                            "User-Agent": default_user_agent,
+                        },
                     })
-                    logger.info(f"Source URL: {source_url[:60]}... -> Referer: {source_referer}")
-            
-            # Process subtitle tracks (handle null/None)
+                    logger.info(f"Source URL: {source_url[:60]}… → Referer: {source_referer}")
+
+            # Process subtitle tracks
             tracks_data = data.get('tracks')
             if tracks_data and isinstance(tracks_data, list):
                 for track in tracks_data:
@@ -1195,15 +1212,301 @@ class HiAnimeScraper:
                             result["tracks"].append({
                                 "url": track_file,
                                 "lang": track.get('label', 'Unknown'),
-                                "kind": track.get('kind', 'captions')
+                                "kind": track.get('kind', 'captions'),
                             })
-            
+
             logger.info(f"Extracted {len(result['sources'])} sources and {len(result['tracks'])} tracks")
             return result
-            
+
         except Exception as e:
             logger.error(f"Failed to extract stream: {e}", exc_info=True)
             return None
+
+    # -----------------------------------------------------------------
+    # CLIENT KEY EXTRACTION  (pure HTTP, no browser)
+    # -----------------------------------------------------------------
+
+    @staticmethod
+    def _extract_client_key(html: str) -> Optional[str]:
+        """
+        Extract the 48-character client key from embed page HTML.
+
+        The MegaCloud server embeds the key using one of several
+        obfuscation formats (randomly selected per request):
+
+        1. ``<meta name="_gg_fb" content="{KEY}">``
+        2. ``<!-- _is_th:{KEY} -->``
+        3. ``<script>window._lk_db = {x: "P1", y: "P2", z: "P3"};</script>``
+        4. ``<div data-dpi="{KEY}" ...></div>``
+        5. ``<script nonce="{KEY}">``
+        6. ``<script>window._xy_ws = '{KEY}';</script>``
+
+        Returns:
+            48-character alphanumeric client key, or None if not found.
+        """
+        import re
+
+        # Pattern 1: meta tag
+        m = re.search(r'<meta\s+name="_gg_fb"\s+content="([a-zA-Z0-9]+)"', html)
+        if m and len(m.group(1)) == 48:
+            return m.group(1)
+
+        # Pattern 2: HTML comment
+        m = re.search(r'<!--\s+_is_th:([0-9a-zA-Z]+)\s+-->', html)
+        if m and len(m.group(1)) == 48:
+            return m.group(1)
+
+        # Pattern 3: _lk_db (3 parts × 16 chars)
+        m = re.search(
+            r'window\._lk_db\s*=\s*\{x:\s*"([a-zA-Z0-9]+)",\s*'
+            r'y:\s*"([a-zA-Z0-9]+)",\s*z:\s*"([a-zA-Z0-9]+)"\}',
+            html,
+        )
+        if m:
+            key = m.group(1) + m.group(2) + m.group(3)
+            if len(key) == 48:
+                return key
+
+        # Pattern 4: data-dpi div attribute
+        m = re.search(r'<div\s+data-dpi="([0-9a-zA-Z]+)"', html)
+        if m and len(m.group(1)) == 48:
+            return m.group(1)
+
+        # Pattern 5: nonce attribute on script tag
+        m = re.search(r'<script\s+nonce="([0-9a-zA-Z]+)"', html)
+        if m and len(m.group(1)) == 48:
+            return m.group(1)
+
+        # Pattern 6: _xy_ws variable
+        m = re.search(r"window\._xy_ws\s*=\s*['\"]([0-9a-zA-Z]+)['\"]", html)
+        if m and len(m.group(1)) == 48:
+            return m.group(1)
+
+        # Fallback: look for any 48-char alphanumeric string in the HTML
+        # that isn't a known non-key value (e.g., hashes in script URLs)
+        for m in re.finditer(r'(?<=")[a-zA-Z0-9]{48}(?=")', html):
+            candidate = m.group(0)
+            # Skip if it appears in a known non-key context (script src)
+            if candidate not in html.split('<script')[0]:
+                return candidate
+
+        return None
+
+    def _get_sources_via_client_key(
+        self, embed_url: str
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Fetch the embed page HTML, extract the client key, and call
+        the ``getSources`` API.
+
+        This replaces the previous Playwright-based approach — no
+        browser is needed because the client key is embedded directly
+        in the server HTML response.
+        """
+        import re
+        from urllib.parse import urlparse
+
+        parsed = urlparse(embed_url)
+        path_parts = parsed.path.rstrip('/').split('/')
+        video_id = path_parts[-1] if path_parts else None
+        if not video_id:
+            logger.error(f"Could not extract video ID from: {embed_url}")
+            return None
+
+        base_url = f"{parsed.scheme}://{parsed.netloc}"
+        embed_prefix = '/'.join(path_parts[:-1])
+
+        # Step 1: Fetch embed page HTML (Referer is required!)
+        embed_headers = {
+            'Referer': 'https://hianime.to/',
+            'User-Agent': (
+                'Mozilla/5.0 (Windows NT 10.0; Win64; x64) '
+                'AppleWebKit/537.36 (KHTML, like Gecko) '
+                'Chrome/126.0.0.0 Safari/537.36'
+            ),
+            'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+        }
+
+        try:
+            resp = self.client.session.get(embed_url, headers=embed_headers, timeout=15)
+            if resp.status_code != 200:
+                logger.error(
+                    f"Embed page returned {resp.status_code}: {resp.text[:200]}"
+                )
+                return None
+            html = resp.text
+        except Exception as e:
+            logger.error(f"Failed to fetch embed page: {e}")
+            return None
+
+        # Step 2: Extract client key
+        client_key = self._extract_client_key(html)
+        if not client_key:
+            logger.error("Could not extract client key from embed HTML")
+            logger.debug(f"Embed HTML (first 500 chars): {html[:500]}")
+            return None
+
+        logger.info(f"Client key: {client_key[:8]}…{client_key[-8:]}")
+
+        # Step 3: Call getSources API
+        get_sources_url = (
+            f"{base_url}{embed_prefix}/getSources"
+            f"?id={video_id}&_k={client_key}"
+        )
+        logger.info(f"Calling getSources: {get_sources_url}")
+
+        api_headers = {
+            'Referer': embed_url,
+            'User-Agent': embed_headers['User-Agent'],
+            'Accept': 'application/json, text/plain, */*',
+            'X-Requested-With': 'XMLHttpRequest',
+        }
+
+        try:
+            resp = self.client.session.get(
+                get_sources_url, headers=api_headers, timeout=15
+            )
+            if resp.status_code != 200:
+                logger.error(
+                    f"getSources returned {resp.status_code}: {resp.text[:200]}"
+                )
+                return None
+
+            data = resp.json()
+            logger.info(
+                f"getSources OK: {len(data.get('sources', []))} sources, "
+                f"{len(data.get('tracks', []))} tracks"
+            )
+            return data
+
+        except Exception as e:
+            logger.error(f"getSources request failed: {e}")
+            return None
+
+    # -----------------------------------------------------------------
+    # LOCAL DECRYPTION HELPERS  (replaces crawlr.cc dependency)
+    # -----------------------------------------------------------------
+
+    def _decrypt_sources(self, encrypted: str) -> Optional[list]:
+        """
+        Decrypt MegaCloud / RapidCloud AES-encrypted sources string.
+
+        Algorithm:
+        1. Fetch the AES passphrase from a public key repository.
+        2. Decrypt the Base64-encoded ciphertext with CryptoJS-compatible
+           AES-256-CBC (OpenSSL ``Salted__`` KDF).
+        3. Parse the resulting JSON list of sources.
+        """
+        try:
+            passphrase = self._get_decryption_key()
+            if not passphrase:
+                logger.error("Could not obtain decryption key")
+                return None
+
+            decrypted_text = self._cryptojs_aes_decrypt(encrypted, passphrase)
+            if decrypted_text is None:
+                return None
+
+            return json.loads(decrypted_text)
+
+        except Exception as e:
+            logger.error(f"Decryption failed: {e}", exc_info=True)
+            return None
+
+    def _get_decryption_key(self) -> Optional[str]:
+        """
+        Fetch the AES passphrase used to decrypt MegaCloud sources.
+        Results are cached for ``_DECRYPTION_KEY_TTL`` seconds.
+        """
+        now = time.time()
+        if (
+            self._decryption_key_cache is not None
+            and (now - self._decryption_key_cache_time) < self._DECRYPTION_KEY_TTL
+        ):
+            return self._decryption_key_cache
+
+        # Key sources — maintained by the community, tried in order
+        key_urls = [
+            "https://raw.githubusercontent.com/itzzzme/megacloud-keys/main/key.txt",
+            "https://raw.githubusercontent.com/itzzzme/megacloud-keys/refs/heads/main/key.txt",
+        ]
+
+        for url in key_urls:
+            try:
+                resp = requests.get(url, timeout=10)
+                if resp.status_code == 200 and resp.text.strip():
+                    key = resp.text.strip()
+                    logger.info(f"Fetched decryption key from {url} (len={len(key)})")
+                    self.__class__._decryption_key_cache = key
+                    self.__class__._decryption_key_cache_time = now
+                    return key
+            except Exception as exc:
+                logger.debug(f"Key fetch failed for {url}: {exc}")
+                continue
+
+        logger.error("Could not fetch decryption key from any source")
+        return None
+
+    @staticmethod
+    def _cryptojs_aes_decrypt(ciphertext_b64: str, passphrase: str) -> Optional[str]:
+        """
+        Decrypt a CryptoJS AES-256-CBC encrypted string.
+
+        CryptoJS uses the OpenSSL ``Salted__`` format:
+            Base64 → ``Salted__`` (8 bytes) + salt (8 bytes) + ciphertext
+        Key/IV are derived via ``EVP_BytesToKey`` (MD5-based).
+        """
+        try:
+            import base64
+            import hashlib
+            from Crypto.Cipher import AES
+
+            raw = base64.b64decode(ciphertext_b64)
+
+            # OpenSSL salted format
+            if raw[:8] == b'Salted__':
+                salt = raw[8:16]
+                ct = raw[16:]
+            else:
+                salt = b''
+                ct = raw
+
+            # EVP_BytesToKey — derive 32-byte key + 16-byte IV
+            key, iv = HiAnimeScraper._evp_bytes_to_key(
+                passphrase.encode('utf-8'), salt, key_len=32, iv_len=16,
+            )
+
+            cipher = AES.new(key, AES.MODE_CBC, iv)
+            decrypted = cipher.decrypt(ct)
+
+            # Strip PKCS#7 padding
+            pad_len = decrypted[-1]
+            if pad_len < 1 or pad_len > 16:
+                logger.warning("Unexpected PKCS#7 pad byte, returning raw")
+            else:
+                decrypted = decrypted[:-pad_len]
+
+            return decrypted.decode('utf-8')
+
+        except Exception as e:
+            logger.error(f"AES decryption error: {e}", exc_info=True)
+            return None
+
+    @staticmethod
+    def _evp_bytes_to_key(
+        password: bytes, salt: bytes, key_len: int = 32, iv_len: int = 16,
+    ) -> tuple:
+        """
+        OpenSSL ``EVP_BytesToKey`` (MD5-based) — used by CryptoJS default KDF.
+        """
+        import hashlib
+
+        d = b''
+        d_i = b''
+        while len(d) < key_len + iv_len:
+            d_i = hashlib.md5(d_i + password + salt).digest()
+            d += d_i
+        return d[:key_len], d[key_len:key_len + iv_len]
     
     def get_streaming_links(self, episode_id: str, server_type: str = "sub") -> Dict[str, Any]:
         """
